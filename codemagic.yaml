@@ -27,15 +27,18 @@ workflows:
           xcodegen generate
       - name: Set up code signing (create cert+profile via ASC API key)
         script: |
+          set -e
           cd "$CM_BUILD_DIR"
+          echo "BUNDLE_ID=$BUNDLE_ID"
           if [ -z "$CERTIFICATE_PRIVATE_KEY" ]; then
-            echo "ERROR: CERTIFICATE_PRIVATE_KEY is EMPTY."
-            echo "Add it in Codemagic -> piks -> Environment variables:"
-            echo "  name=CERTIFICATE_PRIVATE_KEY  group=piks_signing  Secret=yes"
+            echo "ERROR: CERTIFICATE_PRIVATE_KEY is EMPTY (add it to group piks_signing, Secret)."
             exit 1
           fi
+          echo "CERTIFICATE_PRIVATE_KEY length: ${#CERTIFICATE_PRIVATE_KEY}"
           keychain initialize
           echo "$CERTIFICATE_PRIVATE_KEY" | openssl base64 -A -d -out /tmp/cert_key.pem
+          echo "decoded key head: $(head -1 /tmp/cert_key.pem)"
+          echo "===== app-store-connect fetch-signing-files ====="
           app-store-connect fetch-signing-files "$BUNDLE_ID" \
             --type IOS_APP_STORE \
             --certificate-key=@file:/tmp/cert_key.pem \
@@ -43,14 +46,19 @@ workflows:
             --verbose
           keychain add-certificates
           xcode-project use-profiles --verbose
-          echo "===== Installed provisioning profiles: ====="
-          ls -la "$HOME/Library/MobileDevice/Provisioning Profiles/" 2>/dev/null || echo "(NONE — profile was not created!)"
+          echo "===== installed provisioning profiles ====="
+          ls -la "$HOME/Library/MobileDevice/Provisioning Profiles/" 2>/dev/null || true
+          PC=$(ls "$HOME/Library/MobileDevice/Provisioning Profiles/" 2>/dev/null | wc -l | tr -d ' ')
+          echo "profile count: $PC"
+          if [ "$PC" = "0" ]; then
+            echo "FATAL: no provisioning profile was created for $BUNDLE_ID — see the fetch-signing-files output above."
+            exit 1
+          fi
       - name: Set build number
         script: |
           cd "$CM_BUILD_DIR"
           BN=$(date +%s)
           agvtool new-version -all "$BN"
-          echo "CFBundleVersion set to $BN"
       - name: Build IPA
         script: |
           cd "$CM_BUILD_DIR"
