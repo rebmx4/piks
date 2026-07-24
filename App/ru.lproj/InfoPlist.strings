@@ -1,0 +1,4 @@
+/* Russian localization for Info.plist */
+"CFBundleDisplayName" = "Piks";
+"NSCameraUsageDescription" = "Камера нужна, чтобы снять фото прямо в редакторе для дальнейшей обработки.";
+"NSPhotoLibraryAddUsageDescription" = "Разрешение нужно, чтобы сохранять отредактированные фото в вашу галерею.";

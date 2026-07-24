@@ -1,0 +1,4 @@
+/* English localization for Info.plist */
+"CFBundleDisplayName" = "Piks";
+"NSCameraUsageDescription" = "The camera lets you take a photo right in the editor to edit it.";
+"NSPhotoLibraryAddUsageDescription" = "This permission lets you save edited photos to your library.";

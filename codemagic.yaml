@@ -1,0 +1,69 @@
+workflows:
+  ios-app-store:
+    name: Piks iOS TestFlight
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: konspa
+    environment:
+      groups:
+        - konspa_signing
+      xcode: latest
+      vars:
+        XCODE_SCHEME: "App"
+        BUNDLE_ID: "com.piks.app"
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: main
+          include: true
+    scripts:
+      - name: Install XcodeGen
+        script: HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen
+      - name: Generate Xcode project
+        script: |
+          cd "$CM_BUILD_DIR"
+          xcodegen generate
+      - name: Set up code signing (auto via ASC API key)
+        script: |
+          cd "$CM_BUILD_DIR"
+          keychain initialize
+          echo "$CERTIFICATE_PRIVATE_KEY" | openssl base64 -A -d -out /tmp/cert_key.pem
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --certificate-key=@file:/tmp/cert_key.pem \
+            --create \
+            --verbose
+          keychain add-certificates
+          xcode-project use-profiles --verbose
+      - name: Set build number
+        script: |
+          cd "$CM_BUILD_DIR"
+          BN=$(date +%s)
+          agvtool new-version -all "$BN"
+          echo "CFBundleVersion set to $BN"
+      - name: Build IPA
+        script: |
+          cd "$CM_BUILD_DIR"
+          xcode-project build-ipa \
+            --project "Piks.xcodeproj" \
+            --scheme "$XCODE_SCHEME" || {
+              echo "===== BUILD FAILED — error lines from xcodebuild ====="
+              grep -h -A3 "error:" /tmp/xcodebuild_logs/*.log 2>/dev/null | tail -n 60
+              tail -n 40 /tmp/xcodebuild_logs/*.log 2>/dev/null
+              exit 1
+            }
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
+      email:
+        recipients:
+          - rerebmx@gmail.com
+        notify:
+          success: true
+          failure: true
