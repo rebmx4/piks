@@ -28,6 +28,12 @@ workflows:
       - name: Set up code signing (create cert+profile via ASC API key)
         script: |
           cd "$CM_BUILD_DIR"
+          if [ -z "$CERTIFICATE_PRIVATE_KEY" ]; then
+            echo "ERROR: CERTIFICATE_PRIVATE_KEY is EMPTY."
+            echo "Add it in Codemagic -> piks -> Environment variables:"
+            echo "  name=CERTIFICATE_PRIVATE_KEY  group=piks_signing  Secret=yes"
+            exit 1
+          fi
           keychain initialize
           echo "$CERTIFICATE_PRIVATE_KEY" | openssl base64 -A -d -out /tmp/cert_key.pem
           app-store-connect fetch-signing-files "$BUNDLE_ID" \
@@ -37,6 +43,8 @@ workflows:
             --verbose
           keychain add-certificates
           xcode-project use-profiles --verbose
+          echo "===== Installed provisioning profiles: ====="
+          ls -la "$HOME/Library/MobileDevice/Provisioning Profiles/" 2>/dev/null || echo "(NONE — profile was not created!)"
       - name: Set build number
         script: |
           cd "$CM_BUILD_DIR"
