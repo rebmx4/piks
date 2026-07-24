@@ -6,9 +6,10 @@ workflows:
     integrations:
       app_store_connect: konspa
     environment:
-      groups:
-        - konspa_signing
       xcode: latest
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.piks.app
       vars:
         XCODE_SCHEME: "App"
         BUNDLE_ID: "com.piks.app"
@@ -25,17 +26,9 @@ workflows:
         script: |
           cd "$CM_BUILD_DIR"
           xcodegen generate
-      - name: Set up code signing (auto via ASC API key)
+      - name: Set up code signing (auto via App Store Connect integration)
         script: |
           cd "$CM_BUILD_DIR"
-          keychain initialize
-          echo "$CERTIFICATE_PRIVATE_KEY" | openssl base64 -A -d -out /tmp/cert_key.pem
-          app-store-connect fetch-signing-files "$BUNDLE_ID" \
-            --type IOS_APP_STORE \
-            --certificate-key=@file:/tmp/cert_key.pem \
-            --create \
-            --verbose
-          keychain add-certificates
           xcode-project use-profiles --verbose
       - name: Set build number
         script: |
