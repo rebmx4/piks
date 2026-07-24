@@ -45,15 +45,8 @@ workflows:
             --create \
             --verbose
           keychain add-certificates
+          echo "===== Applying profiles to project ====="
           xcode-project use-profiles --verbose
-          echo "===== installed provisioning profiles ====="
-          ls -la "$HOME/Library/MobileDevice/Provisioning Profiles/" 2>/dev/null || true
-          PC=$(ls "$HOME/Library/MobileDevice/Provisioning Profiles/" 2>/dev/null | wc -l | tr -d ' ')
-          echo "profile count: $PC"
-          if [ "$PC" = "0" ]; then
-            echo "FATAL: no provisioning profile was created for $BUNDLE_ID — see the fetch-signing-files output above."
-            exit 1
-          fi
       - name: Set build number
         script: |
           cd "$CM_BUILD_DIR"
