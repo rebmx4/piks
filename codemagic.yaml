@@ -12,12 +12,16 @@ workflows:
       vars:
         XCODE_SCHEME: "App"
         BUNDLE_ID: "com.piks.app"
-    triggering:
-      events:
-        - push
-      branch_patterns:
-        - pattern: main
-          include: true
+    # Автозапуск по отправке в main отключён по решению владельца 23.09.2026:
+    # агент готовит сборку, владелец запускает её сам кнопкой «Start new build».
+    # Чтобы вернуть автозапуск — раскомментировать блок ниже.
+    #
+    # triggering:
+    #   events:
+    #     - push
+    #   branch_patterns:
+    #     - pattern: main
+    #       include: true
     scripts:
       - name: Install XcodeGen
         script: HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen
