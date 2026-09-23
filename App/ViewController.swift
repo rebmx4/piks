@@ -5,6 +5,7 @@ import SafariServices
 class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
 
     private var webView: WKWebView!
+    private var mediaBridge: MediaBridge!
     private var progressView: UIProgressView!
     private var offlineView: UIView!
     private let refreshControl = UIRefreshControl()
@@ -28,12 +29,22 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
     // no-cache policy so every launch pulls a fresh shell from the network.
     private func clearWebCachesThenLoad() {
         URLCache.shared.removeAllCachedResponses()
+        // NB: do NOT clear WKWebsiteDataTypeServiceWorkerRegistrations here.
+        // Wiping it every launch forced the SW to re-install and re-claim on each
+        // open, which fired the web layer's controllerchange→reload → the app
+        // "flashed twice" on startup. The SW is network-first for HTML and the
+        // shell is served no-cache, so freshness is already guaranteed; keeping the
+        // registration lets it persist (faster launch + real offline support).
+        // NB: do NOT clear WKWebsiteDataTypeFetchCache either. That type IS the
+        // CacheStorage / Cache API store, where the service worker keeps the ~30 MB
+        // of MediaPipe models + wasm. Wiping it every launch made the app
+        // re-download them before Красота/Пластика could run (a 30-90 s wait that
+        // read as "не работает"). The plain HTTP caches below are still cleared, so
+        // html/js/css stay fresh on every launch.
         let types: Set<String> = [
             WKWebsiteDataTypeDiskCache,
             WKWebsiteDataTypeMemoryCache,
             WKWebsiteDataTypeOfflineWebApplicationCache,
-            WKWebsiteDataTypeServiceWorkerRegistrations,
-            WKWebsiteDataTypeFetchCache,
         ]
         WKWebsiteDataStore.default().removeData(
             ofTypes: types,
@@ -53,6 +64,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
             injectionTime: .atDocumentStart,
             forMainFrameOnly: false))
         ucc.add(self, name: "nativeShare")
+        ucc.add(self, name: MediaBridge.handlerName)
         config.userContentController = ucc
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
@@ -60,7 +72,14 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
             config.limitsNavigationsToAppBoundDomains = true
         }
 
+        // Мост к галерее: облегчённая копия ролика вместо копирования 4 ГБ
+        // в песочницу страницы. Обработчик схемы надо поставить ДО создания
+        // webView — на готовую конфигурацию он уже не встанет.
+        mediaBridge = MediaBridge(host: self)
+        config.setURLSchemeHandler(mediaBridge, forURLScheme: MediaBridge.scheme)
+
         webView = WKWebView(frame: .zero, configuration: config)
+        mediaBridge.attach(webView)
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
@@ -224,11 +243,23 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
     // UIActivityViewController gives the wrapper genuine native functionality.
     func userContentController(_ userContentController: WKUserContentController,
                                didReceive message: WKScriptMessage) {
+        if message.name == MediaBridge.handlerName {
+            mediaBridge.handle(message)
+            return
+        }
         guard message.name == "nativeShare" else { return }
         var items: [Any] = []
         if let body = message.body as? [String: Any] {
             if let text = body["text"] as? String, !text.isEmpty { items.append(text) }
             if let urlStr = body["url"] as? String, let url = URL(string: urlStr) { items.append(url) }
+            // Export sheet posts the rendered picture as a data: URL so the native
+            // share sheet offers "Save Image", Instagram, WhatsApp, etc.
+            if let imgStr = body["image"] as? String,
+               let comma = imgStr.range(of: ",")?.upperBound,
+               let data = Data(base64Encoded: String(imgStr[comma...])),
+               let img = UIImage(data: data) {
+                items.append(img)
+            }
         } else if let text = message.body as? String, !text.isEmpty {
             items.append(text)
         }

@@ -23,6 +23,8 @@
 
 	<key>NSCameraUsageDescription</key>
 	<string>The camera lets you take a photo right in the editor to edit it.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Доступ к галерее нужен, чтобы открыть ваш ролик для монтажа без копирования файла целиком.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>This permission lets you save edited photos to your library.</string>
 
@@ -51,6 +53,7 @@
 
 	<key>WKAppBoundDomains</key>
 	<array>
+		<string>rynpro.ru</string>
 		<string>telomer1.ru</string>
 	</array>
 

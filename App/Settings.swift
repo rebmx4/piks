@@ -5,11 +5,13 @@ struct Cookie {
     var value: String
 }
 
-// Стартовый URL — PWA-фоторедактор «Piks» (telomer1.ru/foto/v2).
-let rootUrl = URL(string: "https://telomer1.ru/foto/v2/")!
+// Стартовый URL — видеоредактор Ryndi (rynpro.ru/ryn).
+// Прежний адрес фоторедактора: https://telomer1.ru/foto/v2/ — точка возврата
+// лежит в метке git foto-v2-before-ryndi и в D:\Archive\piks-foto-v2-2026-09-23.
+let rootUrl = URL(string: "https://rynpro.ru/ryn/")!
 
 // Домены, остающиеся внутри WebView. Должны совпадать с WKAppBoundDomains в Info.plist.
-let allowedOrigins: [String] = ["telomer1.ru"]
+let allowedOrigins: [String] = ["rynpro.ru", "telomer1.ru"]
 
 // Сторонний вход не используется — вход по коду на e-mail.
 let authOrigins: [String] = []
