@@ -47,17 +47,27 @@ extension MediaBridge: WKURLSchemeHandler {
         let id = (url.lastPathComponent as NSString).deletingPathExtension
         let rangeHeader = task.request.value(forHTTPHeaderField: "Range")
 
+        // ryndi-media://audio/<id>.m4a — звук ролика отдельным файлом (MediaAudio.swift).
+        if url.host == "audio" {
+            guard let file = audioFiles[id] else {
+                respond(task, key: key, status: 404, headers: [:], body: Data())
+                return
+            }
+            serve(task, key: key, fileURL: file, rangeHeader: rangeHeader, type: "audio/mp4")
+            return
+        }
+
         resolveFile(id) { [weak self] fileURL in
             guard let self = self else { return }
             guard let fileURL = fileURL else {
                 self.respond(task, key: key, status: 404, headers: [:], body: Data())
                 return
             }
-            self.serve(task, key: key, fileURL: fileURL, rangeHeader: rangeHeader)
+            self.serve(task, key: key, fileURL: fileURL, rangeHeader: rangeHeader, type: "video/mp4")
         }
     }
 
-    private func serve(_ task: WKURLSchemeTask, key: ObjectIdentifier, fileURL: URL, rangeHeader: String?) {
+    private func serve(_ task: WKURLSchemeTask, key: ObjectIdentifier, fileURL: URL, rangeHeader: String?, type: String) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             do {
@@ -93,7 +103,7 @@ extension MediaBridge: WKURLSchemeHandler {
                 let body = handle.readData(ofLength: end - start + 1)
 
                 var headers: [String: String] = MediaBridge.cors
-                headers["Content-Type"] = "video/mp4"
+                headers["Content-Type"] = type
                 headers["Accept-Ranges"] = "bytes"
                 headers["Content-Length"] = String(body.count)
                 headers["Cache-Control"] = "no-store"

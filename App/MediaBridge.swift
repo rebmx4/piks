@@ -30,6 +30,7 @@ final class MediaBridge: NSObject {
     private weak var host: UIViewController?
 
     private var files: [String: URL] = [:]          // id -> файл ролика (оригинал или копия)
+    var audioFiles: [String: URL] = [:]             // id -> звук ролика отдельным m4a (MediaAudio.swift)
     private var stopped = Set<ObjectIdentifier>()   // задачи, которые WebKit отменил
     private var export: AVAssetExportSession?
     private var progressTimer: Timer?
@@ -39,7 +40,13 @@ final class MediaBridge: NSObject {
     // Что умеет эта сборка. Страница читает это до загрузки своих модулей
     // и решает, звать ли нативный экспорт. Старая сборка этого не пишет —
     // страница тогда работает как раньше.
-    static let capsScript = "window.__ryndiApp = { version: 2, caps: ['pick', 'export', 'photos', 'share', 'site'] };"
+    // build — номер сборки: по нему в журнале видно, какая сборка стоит у
+    // владельца. wave — волна телефоном, audio — звук отдельным файлом,
+    // ramps — плавная громкость по точкам в экспорте телефоном (сборка №13).
+    static var capsScript: String {
+        let build = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? ""
+        return "window.__ryndiApp = { version: 3, build: '\(build)', caps: ['pick', 'export', 'photos', 'share', 'site', 'wave', 'audio', 'ramps'] };"
+    }
 
     init(host: UIViewController) {
         self.host = host
@@ -67,6 +74,8 @@ final class MediaBridge: NSObject {
         case "export-cancel": exporter?.cancel()
         case "export-share":  shareExport()
         case "site":          setSite(body["value"] as? String)
+        case "wave":          makeWave(body["id"] as? String, buckets: (body["buckets"] as? Int) ?? 2000)
+        case "audio":         makeAudioFile(body["id"] as? String)
         default:              break
         }
     }
@@ -187,7 +196,7 @@ final class MediaBridge: NSObject {
         makeProxy(for: assetId)
     }
 
-    private func send(_ payload: [String: Any]) {
+    func send(_ payload: [String: Any]) {
         guard let webView = webView,
               let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8) else { return }

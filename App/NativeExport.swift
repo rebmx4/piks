@@ -44,6 +44,8 @@ struct ExportPlan {
         let from: Double
         let dur: Double
         let volume: Double
+        // Точки громкости на ленте (секунды выхода): между ними — плавно.
+        let keys: [(at: Double, g: Double)]
     }
     struct Overlay {
         let png: Data
@@ -110,8 +112,13 @@ struct ExportPlan {
                   let at = ExportPlan.num(raw["at"]),
                   let from = ExportPlan.num(raw["from"]),
                   let dur = ExportPlan.num(raw["dur"]) else { continue }
+            let keys: [(at: Double, g: Double)] = ((raw["keys"] as? [[String: Any]]) ?? []).compactMap {
+                (k: [String: Any]) -> (at: Double, g: Double)? in
+                guard let kat = ExportPlan.num(k["at"]), let g = ExportPlan.num(k["g"]) else { return nil }
+                return (at: kat, g: g)
+            }
             allSounds.append(Sound(media: mid, at: at, from: from, dur: dur,
-                                   volume: ExportPlan.num(raw["volume"]) ?? 1))
+                                   volume: ExportPlan.num(raw["volume"]) ?? 1, keys: keys))
         }
         sounds = allSounds
 
@@ -488,7 +495,33 @@ final class NativeExporter {
             guard let track = chosen else { continue }
             try place(track, src, at: s.at, from: s.from, dur: s.dur, ends: &ends)
             let p = params[track.trackID] ?? AVMutableAudioMixInputParameters(track: track)
-            p.setVolume(Float(s.volume), at: start)
+            if s.keys.count >= 2 {
+                // Точки громкости: уровень в начале куска, дальше между
+                // соседними точками — плавный переход (setVolumeRamp).
+                let end = s.at + s.dur
+                func gain(_ t: Double) -> Double {
+                    if t <= s.keys[0].at { return s.keys[0].g }
+                    for i in 0..<(s.keys.count - 1) where t <= s.keys[i + 1].at {
+                        let a = s.keys[i], b = s.keys[i + 1]
+                        return a.g + (b.g - a.g) * (t - a.at) / max(0.001, b.at - a.at)
+                    }
+                    return s.keys[s.keys.count - 1].g
+                }
+                var cursor = s.at
+                // Уровень в начале — отдельно, только если первый переход
+                // начинается позже: пересекаться с ним не должен.
+                if s.keys[0].at > s.at + 0.001 { p.setVolume(Float(gain(cursor)), at: start) }
+                for i in 0..<(s.keys.count - 1) {
+                    let from = max(s.keys[i].at, cursor), to = min(s.keys[i + 1].at, end)
+                    if to - from < 0.001 { continue }
+                    p.setVolumeRamp(fromStartVolume: Float(gain(from)), toEndVolume: Float(gain(to)),
+                                    timeRange: CMTimeRange(start: time(from), end: time(to)))
+                    cursor = to
+                }
+                if cursor < end - 0.001 { p.setVolume(Float(gain(cursor)), at: time(cursor)) }
+            } else {
+                p.setVolume(Float(s.volume), at: start)
+            }
             params[track.trackID] = p
         }
         let mix = AVMutableAudioMix()
