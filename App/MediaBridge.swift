@@ -10,13 +10,17 @@ import AVFoundation
 // копированием файла в свою песочницу. На материале владельца (4K, 4 ГБ,
 // 147 Мбит/с) это занимает минуты, а Safari потом всё равно не успевает читать
 // файл и воспроизведение встаёт: измерено на iPhone 13 Pro Max — прочитано
-// 6 секунд из 236. Оболочка решает это штатно: берёт ролик из галереи без
-// копирования и пересжимает его в 1080p средствами телефона, на видеокарте.
+// 6 секунд из 236.
 //
-// Что отдаём вебу: адрес вида ryndi-media://proxy/<id>.mp4 на уже облегчённую
-// копию. Свою схему обслуживает этот же класс, с поддержкой докачки по частям
-// (без неё перемотка видео не работает) и с заголовком доступа, без которого
-// кадр нельзя положить в текстуру WebGL.
+// Как решаем. Главный путь — отдать ОРИГИНАЛ там, где он лежит, вообще ничего
+// не готовя. Так работает CapCut, поэтому у него ролик открывается мгновенно.
+// Пересжатие в 1080p остаётся запасным вариантом на случай, когда файл
+// напрямую недоступен: оно занимает время, пропорциональное длине ролика.
+//
+// Что отдаём вебу: адрес вида ryndi-media://orig/<id>.mp4 (или .../proxy/...,
+// если пришлось пересжимать). Свою схему обслуживает этот же класс, с
+// поддержкой докачки по частям — без неё перемотка не работает — и с
+// заголовком доступа, без которого кадр нельзя положить в текстуру WebGL.
 final class MediaBridge: NSObject {
 
     static let scheme = "ryndi-media"
@@ -51,8 +55,15 @@ final class MediaBridge: NSObject {
         switch body["cmd"] as? String {
         case "ping":  send(["event": "ready"])
         case "pick":  pickVideo()
+        case "proxy": makeProxyOnDemand(body["id"] as? String)
         default:      break
         }
+    }
+
+    // Владелец попросил облегчить уже открытый ролик.
+    private func makeProxyOnDemand(_ assetId: String?) {
+        guard let assetId = assetId else { fail("нечего облегчать"); return }
+        makeProxy(for: assetId)
     }
 
     private func send(_ payload: [String: Any]) {
@@ -116,6 +127,28 @@ final class MediaBridge: NSObject {
                 return
             }
             let seconds = CMTimeGetSeconds(avAsset.duration)
+
+            // Быстрый путь: отдаём ОРИГИНАЛ там, где он лежит, без пересжатия.
+            // Так работает CapCut — он ничего не готовит заранее, поэтому ролик
+            // открывается мгновенно. Пересжатие в 1080p оставляем запасным
+            // вариантом: оно занимает время, пропорциональное длине ролика.
+            if let urlAsset = avAsset as? AVURLAsset,
+               FileManager.default.isReadableFile(atPath: urlAsset.url.path) {
+                let id = UUID().uuidString
+                self.files[id] = urlAsset.url
+                let attrs = try? FileManager.default.attributesOfItem(atPath: urlAsset.url.path)
+                let size = (attrs?[.size] as? Int) ?? 0
+                self.send([
+                    "event": "ready-file",
+                    "url": "\(MediaBridge.scheme)://orig/\(id).mp4",
+                    "bytes": size,
+                    "seconds": seconds,
+                    "original": true,
+                ])
+                return
+            }
+
+            // Оригинал недоступен напрямую — готовим облегчённую копию.
             DispatchQueue.main.async { self.exportProxy(from: avAsset, seconds: seconds) }
         }
     }
