@@ -3,7 +3,7 @@ import WebKit
 
 // Отдаёт облегчённую копию ролика странице по схеме ryndi-media://
 //
-// Две вещи здесь обязательны, и обе неочевидны:
+// Три вещи здесь обязательны, и все неочевидны (третья — ниже, у OPTIONS):
 //
 // 1. Докачка по частям (заголовок Range). Без неё элемент video не умеет
 //    перематывать и на длинном ролике просто не стартует.
@@ -15,12 +15,31 @@ extension MediaBridge: WKURLSchemeHandler {
 
     private static let chunkLimit = 4 * 1024 * 1024   // не читаем в память больше 4 МБ за раз
 
+    // Разрешения CORS для страницы. Без Allow-Headers: Range предварительный
+    // запрос проваливается, без Expose-Headers странице не виден размер файла.
+    private static let cors: [String: String] = [
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+        "Access-Control-Allow-Headers": "Range, Content-Type",
+        "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
+        "Access-Control-Max-Age": "86400",
+    ]
+
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
         let key = ObjectIdentifier(task)
         unmarkStopped(key)
 
         guard let url = task.request.url else {
             respond(task, key: key, status: 404, headers: [:], body: Data())
+            return
+        }
+        // 3. Предварительный запрос CORS (OPTIONS). Волна и копия ролика
+        //    читают его через fetch с заголовком Range, и WebKit сначала
+        //    спрашивает разрешения. Раньше на этот вопрос отдавался сам файл
+        //    без разрешения на Range, и страница получала «Load failed» —
+        //    волна в приложении не строилась (журнал владельца 23.09.2026).
+        if task.request.httpMethod == "OPTIONS" {
+            respond(task, key: key, status: 204, headers: MediaBridge.cors, body: Data())
             return
         }
         // ryndi-media://orig/<id>.mp4 — файл находим по номеру; после
@@ -73,13 +92,11 @@ extension MediaBridge: WKURLSchemeHandler {
                 try handle.seek(toOffset: UInt64(start))
                 let body = handle.readData(ofLength: end - start + 1)
 
-                var headers: [String: String] = [
-                    "Content-Type": "video/mp4",
-                    "Accept-Ranges": "bytes",
-                    "Content-Length": String(body.count),
-                    "Access-Control-Allow-Origin": "*",
-                    "Cache-Control": "no-store",
-                ]
+                var headers: [String: String] = MediaBridge.cors
+                headers["Content-Type"] = "video/mp4"
+                headers["Accept-Ranges"] = "bytes"
+                headers["Content-Length"] = String(body.count)
+                headers["Cache-Control"] = "no-store"
                 if status == 206 {
                     headers["Content-Range"] = "bytes \(start)-\(end)/\(total)"
                 }
