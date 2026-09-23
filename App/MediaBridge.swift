@@ -29,10 +29,17 @@ final class MediaBridge: NSObject {
     private weak var webView: WKWebView?
     private weak var host: UIViewController?
 
-    private var files: [String: URL] = [:]          // id -> файл облегчённой копии
+    private var files: [String: URL] = [:]          // id -> файл ролика (оригинал или копия)
     private var stopped = Set<ObjectIdentifier>()   // задачи, которые WebKit отменил
     private var export: AVAssetExportSession?
     private var progressTimer: Timer?
+    private var exporter: NativeExporter?           // идущий нативный экспорт
+    private var lastExport: URL?                    // последний готовый файл — для «Поделиться»
+
+    // Что умеет эта сборка. Страница читает это до загрузки своих модулей
+    // и решает, звать ли нативный экспорт. Старая сборка этого не пишет —
+    // страница тогда работает как раньше.
+    static let capsScript = "window.__ryndiApp = { version: 2, caps: ['pick', 'export', 'photos', 'share', 'site'] };"
 
     init(host: UIViewController) {
         self.host = host
@@ -53,10 +60,124 @@ final class MediaBridge: NSObject {
     func handle(_ message: WKScriptMessage) {
         guard let body = message.body as? [String: Any] else { return }
         switch body["cmd"] as? String {
-        case "ping":  send(["event": "ready"])
-        case "pick":  pickVideo()
-        case "proxy": makeProxyOnDemand(body["id"] as? String)
-        default:      break
+        case "ping":          send(["event": "ready"])
+        case "pick":          pickVideo()
+        case "proxy":         makeProxyOnDemand(body["id"] as? String)
+        case "export":        startExport(body["plan"] as? String, job: body["job"] as? String)
+        case "export-cancel": exporter?.cancel()
+        case "export-share":  shareExport()
+        case "site":          setSite(body["value"] as? String)
+        default:              break
+        }
+    }
+
+    // MARK: - Нативный экспорт
+
+    private func startExport(_ text: String?, job: String?) {
+        let job = job ?? "job"
+        if exporter != nil {
+            send(["event": "export-error", "job": job, "reason": "экспорт уже идёт"])
+            return
+        }
+        guard let text = text, let data = text.data(using: .utf8),
+              let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let plan = ExportPlan(json: json) else {
+            send(["event": "export-error", "job": job, "reason": "план экспорта не прочитался"])
+            return
+        }
+        let ex = NativeExporter(job: job, plan: plan,
+            send: { [weak self] event in self?.send(event) },
+            resolve: { [weak self] id, done in
+                guard let self = self else { done(nil); return }
+                self.resolveFile(id, done: done)
+            })
+        ex.onFinish = { [weak self] file in
+            guard let self = self else { return }
+            if let file = file {
+                if let old = self.lastExport, old != file { try? FileManager.default.removeItem(at: old) }
+                self.lastExport = file
+            }
+            self.exporter = nil
+            UIApplication.shared.isIdleTimerDisabled = false
+        }
+        exporter = ex
+        // Пока идёт экспорт, экран не гаснет: в фоне телефон не даёт считать
+        // на видеокарте, и сборка оборвалась бы.
+        UIApplication.shared.isIdleTimerDisabled = true
+        ex.start()
+    }
+
+    // Готовый файл — в системное окно «Поделиться»: Instagram, Telegram, Файлы.
+    private func shareExport() {
+        guard let file = lastExport, FileManager.default.fileExists(atPath: file.path),
+              let host = host else {
+            send(["event": "share-error", "reason": "файла экспорта уже нет — экспортируйте заново"])
+            return
+        }
+        let sheet = UIActivityViewController(activityItems: [file], applicationActivities: nil)
+        if let pop = sheet.popoverPresentationController {
+            pop.sourceView = host.view
+            pop.sourceRect = CGRect(x: host.view.bounds.midX, y: host.view.bounds.midY, width: 0, height: 0)
+            pop.permittedArrowDirections = []
+        }
+        host.present(sheet, animated: true)
+    }
+
+    // «Тестовая версия» в профиле: приложение открывает /ryn-next/ или /ryn/.
+    private func setSite(_ value: String?) {
+        (host as? ViewController)?.switchSite(value == "next" ? "next" : "stable")
+    }
+
+    // MARK: - Постоянные адреса роликов
+    //
+    // Раньше адрес ролика был случайным номером и жил, пока открыто
+    // приложение: после перезапуска проект терял ролик. Теперь в адресе —
+    // номер ролика в галерее (localIdentifier), и по нему файл находится
+    // снова в любой момент.
+
+    static func stableId(_ localIdentifier: String) -> String {
+        let b64 = Data(localIdentifier.utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        return "p" + b64
+    }
+
+    static func localIdentifier(from id: String) -> String? {
+        guard id.hasPrefix("p"), id.count > 1 else { return nil }
+        var b64 = String(id.dropFirst())
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        while b64.count % 4 != 0 { b64 += "=" }
+        guard let data = Data(base64Encoded: b64) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    // Файл ролика по номеру из адреса. Ответ всегда на главной очереди.
+    func resolveFile(_ id: String, done: @escaping (URL?) -> Void) {
+        if let file = files[id], FileManager.default.fileExists(atPath: file.path) {
+            done(file)
+            return
+        }
+        guard let local = MediaBridge.localIdentifier(from: id),
+              let asset = PHAsset.fetchAssets(withLocalIdentifiers: [local], options: nil).firstObject else {
+            done(nil)
+            return
+        }
+        let options = PHVideoRequestOptions()
+        options.isNetworkAccessAllowed = true
+        options.deliveryMode = .highQualityFormat
+        options.version = .current
+        PHImageManager.default().requestAVAsset(forVideo: asset, options: options) { [weak self] avAsset, _, _ in
+            let url = (avAsset as? AVURLAsset)?.url
+            DispatchQueue.main.async {
+                guard let url = url, FileManager.default.isReadableFile(atPath: url.path) else {
+                    done(nil)
+                    return
+                }
+                self?.files[id] = url
+                done(url)
+            }
         }
     }
 
@@ -134,7 +255,9 @@ final class MediaBridge: NSObject {
             // вариантом: оно занимает время, пропорциональное длине ролика.
             if let urlAsset = avAsset as? AVURLAsset,
                FileManager.default.isReadableFile(atPath: urlAsset.url.path) {
-                let id = UUID().uuidString
+                // Номер ролика в галерее, а не случайный: адрес переживёт
+                // перезапуск приложения (см. «Постоянные адреса роликов»).
+                let id = MediaBridge.stableId(assetId)
                 self.files[id] = urlAsset.url
                 let attrs = try? FileManager.default.attributesOfItem(atPath: urlAsset.url.path)
                 let size = (attrs?[.size] as? Int) ?? 0

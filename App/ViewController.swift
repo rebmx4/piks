@@ -63,6 +63,11 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
             source: "window.__IS_IOS_APP = true;",
             injectionTime: .atDocumentStart,
             forMainFrameOnly: false))
+        // Что умеет сборка (нативный экспорт и прочее) — до модулей страницы.
+        ucc.addUserScript(WKUserScript(
+            source: MediaBridge.capsScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true))
         ucc.add(self, name: "nativeShare")
         ucc.add(self, name: MediaBridge.handlerName)
         config.userContentController = ucc
@@ -103,6 +108,14 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
             webView.scrollView.refreshControl = refreshControl
         }
         webView.addObserver(self, forKeyPath: #keyPath(WKWebView.estimatedProgress), options: .new, context: nil)
+
+        // Три пальца, долгое нажатие — меню версии (см. chooseSite).
+        let siteGesture = UILongPressGestureRecognizer(target: self, action: #selector(chooseSite(_:)))
+        siteGesture.numberOfTouchesRequired = 3
+        siteGesture.minimumPressDuration = 1.0
+        siteGesture.cancelsTouchesInView = false
+        siteGesture.delegate = self
+        webView.addGestureRecognizer(siteGesture)
     }
 
     private func setupProgress() {
@@ -157,6 +170,33 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
         var req = URLRequest(url: rootUrl)
         req.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         webView.load(req)
+    }
+
+    // Переключили сайт (тестовая / рабочая версия) — запоминаем и открываем.
+    func switchSite(_ value: String) {
+        UserDefaults.standard.set(value == "next" ? "next" : "stable", forKey: siteKey)
+        loadRoot()
+    }
+
+    // Запасной выход, не зависящий от страницы: долгое нажатие тремя пальцами.
+    // На рабочей версии сайта кнопки перехода может ещё не быть.
+    @objc private func chooseSite(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began else { return }
+        let sheet = UIAlertController(title: "Версия редактора", message: rootUrl.absoluteString,
+                                      preferredStyle: .actionSheet)
+        sheet.addAction(UIAlertAction(title: "Рабочая (/ryn/)", style: .default) { [weak self] _ in
+            self?.switchSite("stable")
+        })
+        sheet.addAction(UIAlertAction(title: "Тестовая (/ryn-next/)", style: .default) { [weak self] _ in
+            self?.switchSite("next")
+        })
+        sheet.addAction(UIAlertAction(title: "Отмена", style: .cancel, handler: nil))
+        if let pop = sheet.popoverPresentationController {
+            pop.sourceView = view
+            pop.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
+            pop.permittedArrowDirections = []
+        }
+        present(sheet, animated: true)
     }
 
     @objc private func reloadWeb() {
@@ -271,5 +311,13 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
             pop.permittedArrowDirections = []
         }
         present(av, animated: true)
+    }
+}
+
+// Жест трёх пальцев не должен мешать странице: распознаётся вместе с её касаниями.
+extension ViewController: UIGestureRecognizerDelegate {
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        return true
     }
 }

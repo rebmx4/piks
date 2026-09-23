@@ -19,13 +19,26 @@ extension MediaBridge: WKURLSchemeHandler {
         let key = ObjectIdentifier(task)
         unmarkStopped(key)
 
-        guard let url = task.request.url, let fileURL = fileURL(for: url) else {
+        guard let url = task.request.url else {
             respond(task, key: key, status: 404, headers: [:], body: Data())
             return
         }
-
+        // ryndi-media://orig/<id>.mp4 — файл находим по номеру; после
+        // перезапуска приложения — заново через галерею.
+        let id = (url.lastPathComponent as NSString).deletingPathExtension
         let rangeHeader = task.request.value(forHTTPHeaderField: "Range")
 
+        resolveFile(id) { [weak self] fileURL in
+            guard let self = self else { return }
+            guard let fileURL = fileURL else {
+                self.respond(task, key: key, status: 404, headers: [:], body: Data())
+                return
+            }
+            self.serve(task, key: key, fileURL: fileURL, rangeHeader: rangeHeader)
+        }
+    }
+
+    private func serve(_ task: WKURLSchemeTask, key: ObjectIdentifier, fileURL: URL, rangeHeader: String?) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             do {
@@ -83,14 +96,6 @@ extension MediaBridge: WKURLSchemeHandler {
     }
 
     // MARK: - Внутреннее
-
-    private func fileURL(for url: URL) -> URL? {
-        // ryndi-media://proxy/<id>.mp4
-        let name = url.lastPathComponent
-        let id = (name as NSString).deletingPathExtension
-        guard !id.isEmpty, let file = proxyFile(id) else { return nil }
-        return FileManager.default.fileExists(atPath: file.path) ? file : nil
-    }
 
     // Ответ отдаём с главной очереди и только если WebKit не отменил задачу:
     // обращение к отменённой задаче роняет приложение.
