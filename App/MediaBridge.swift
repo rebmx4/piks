@@ -42,10 +42,12 @@ final class MediaBridge: NSObject {
     // страница тогда работает как раньше.
     // build — номер сборки: по нему в журнале видно, какая сборка стоит у
     // владельца. wave — волна телефоном, audio — звук отдельным файлом,
-    // ramps — плавная громкость по точкам в экспорте телефоном (сборка №13).
+    // ramps — плавная громкость по точкам в экспорте телефоном (сборка №13),
+    // read — байты звукового файла ролика кусками: звук превью одним потоком,
+    // как в экспорте (сборка №14, MediaAudio.swift).
     static var capsScript: String {
         let build = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? ""
-        return "window.__ryndiApp = { version: 3, build: '\(build)', caps: ['pick', 'export', 'photos', 'share', 'site', 'wave', 'audio', 'ramps'] };"
+        return "window.__ryndiApp = { version: 3, build: '\(build)', caps: ['pick', 'export', 'photos', 'share', 'site', 'wave', 'audio', 'ramps', 'read'] };"
     }
 
     init(host: UIViewController) {
@@ -76,6 +78,7 @@ final class MediaBridge: NSObject {
         case "site":          setSite(body["value"] as? String)
         case "wave":          makeWave(body["id"] as? String, buckets: (body["buckets"] as? Int) ?? 2000)
         case "audio":         makeAudioFile(body["id"] as? String)
+        case "read":          readAudioBytes(body)
         default:              break
         }
     }

@@ -84,6 +84,39 @@ extension MediaBridge {
         }
     }
 
+    // MARK: - Байты звукового файла для страницы (сборка №14)
+
+    // Звук превью одним потоком, как в экспорте (engine/audioengine.js на
+    // странице): страница сама раскладывает звук ролика по ленте, и ей нужен
+    // весь звук ролика. Прочитать ryndi-media:// она не может (смешанное
+    // содержимое), поэтому берёт звуковой файл — тот, что делает
+    // makeAudioFile, — кусками через мост. Кусок не больше 4 МБ; ответ —
+    // событие read с тем же номером просьбы, байты в base64, size — весь файл.
+    func readAudioBytes(_ body: [String: Any]) {
+        let req = (body["req"] as? String) ?? ""
+        guard let id = body["id"] as? String, let url = audioFiles[id] else {
+            send(["event": "read-error", "req": req, "reason": "звуковой файл ролика не готов"])
+            return
+        }
+        let offset = max(0, (body["offset"] as? Int) ?? 0)
+        let length = max(0, min((body["length"] as? Int) ?? 0, 4 * 1024 * 1024))
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
+                let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+                let handle = try FileHandle(forReadingFrom: url)
+                defer { try? handle.close() }
+                try handle.seek(toOffset: UInt64(min(offset, size)))
+                // read(upToCount:) бросает ошибку Swift; readData(ofLength:)
+                // при сбое чтения бросил бы исключение Objective-C мимо catch.
+                let data = try handle.read(upToCount: length) ?? Data()
+                self.send(["event": "read", "req": req, "size": size, "data": data.base64EncodedString()])
+            } catch {
+                self.send(["event": "read-error", "req": req, "reason": error.localizedDescription])
+            }
+        }
+    }
+
     private func exportAudio(_ asset: AVAsset, to out: URL, presets: [String], done: @escaping (String?) -> Void) {
         guard let preset = presets.first else { done("телефон не берётся вынуть звук"); return }
         let rest = Array(presets.dropFirst())
