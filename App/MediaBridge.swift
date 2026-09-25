@@ -47,7 +47,7 @@ final class MediaBridge: NSObject {
     // как в экспорте (сборка №14, MediaAudio.swift).
     static var capsScript: String {
         let build = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? ""
-        return "window.__ryndiApp = { version: 3, build: '\(build)', caps: ['pick', 'export', 'photos', 'share', 'site', 'wave', 'audio', 'ramps', 'read'] };"
+        return "window.__ryndiApp = { version: 3, build: '\(build)', caps: ['pick', 'export', 'photos', 'share', 'site', 'wave', 'audio', 'ramps', 'read', 'adjust'] };"
     }
 
     init(host: UIViewController) {

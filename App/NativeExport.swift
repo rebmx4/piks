@@ -26,6 +26,11 @@ import UIKit
 // превью: числа кадра обрабатываются как есть, картинка совпадает. HDR с
 // айфона AVFoundation сам переводит в обычный 709 до того, как кадр попадёт
 // к нам (свойства цвета у композиции ниже).
+//
+// Настройки цвета клипа (web/core/color.js) приходят готовыми: таблица цвета
+// 33³ (те же байты, что у превью) и числа резкости, виньетки, зерна. Их
+// формулы — как в шейдере превью (web/engine/grade.js), к кадру клипа до
+// общего цвета (RenderScene.effected).
 
 // MARK: - План со страницы
 
@@ -37,6 +42,14 @@ struct ExportPlan {
         let dur: Double
         let k0: Int
         let frames: [[Double]]      // [a, b, c, d, tx, ty, прозрачность] на кадр, начиная с k0
+        let fx: Fx?                 // настройки цвета куска, nil — без них
+    }
+    // Настройки цвета куска — готовые числа формул шейдера превью.
+    struct Fx {
+        let lut: Int                // номер таблицы в luts, −1 — без таблицы
+        let sharpen: Double         // c + k·(c − среднее четырёх соседей)
+        let vignette: Double        // плюс — края темнее на это × форму, минус — светлее
+        let grain: Double           // c + (шум − ½) × это
     }
     struct Sound {
         let media: String
@@ -65,7 +78,10 @@ struct ExportPlan {
     let overlays: [Overlay]
     let sounds: [Sound]
     let grade: [Double]?
+    let luts: [Data]                // таблицы цвета для CIColorCube: 33³ × RGBA, Float32
     let save: Bool
+
+    static let lutN = 33
 
     init?(json: [String: Any]) {
         guard let w = ExportPlan.int(json["width"]), let h = ExportPlan.int(json["height"]),
@@ -99,8 +115,15 @@ struct ExportPlan {
                     if values.count >= 6 { rows.append(values) }
                 }
                 if rows.isEmpty { continue }
+                var fx: Fx? = nil
+                if let f = raw["fx"] as? [String: Any] {
+                    fx = Fx(lut: ExportPlan.int(f["lut"]) ?? -1,
+                            sharpen: ExportPlan.num(f["sharpen"]) ?? 0,
+                            vignette: ExportPlan.num(f["vignette"]) ?? 0,
+                            grain: ExportPlan.num(f["grain"]) ?? 0)
+                }
                 items.append(Item(media: mid, at: at, from: from, dur: dur,
-                                  k0: ExportPlan.int(raw["k0"]) ?? 0, frames: rows))
+                                  k0: ExportPlan.int(raw["k0"]) ?? 0, frames: rows, fx: fx))
             }
             allLayers.append(items)
         }
@@ -135,6 +158,23 @@ struct ExportPlan {
 
         let g = ((json["grade"] as? [Any]) ?? []).compactMap { ExportPlan.num($0) }
         grade = g.count == 12 ? g : nil
+
+        // Таблицы цвета: байты 0…255 -> Float32 0…1, как ждёт CIColorCube.
+        // Битая таблица — пустая (кусок без неё), номера остальных не сдвигаются.
+        let size = ExportPlan.lutN * ExportPlan.lutN * ExportPlan.lutN * 4
+        var tables: [Data] = []
+        for raw in (json["luts"] as? [Any]) ?? [] {
+            guard let text = raw as? String, let bytes = Data(base64Encoded: text), bytes.count == size else {
+                tables.append(Data())
+                continue
+            }
+            var floats = [Float](repeating: 0, count: size)
+            bytes.withUnsafeBytes { (p: UnsafeRawBufferPointer) in
+                for i in 0..<size { floats[i] = Float(p[i]) / 255 }
+            }
+            tables.append(floats.withUnsafeBufferPointer { Data(buffer: $0) })
+        }
+        luts = tables
     }
 
     static func num(_ v: Any?) -> Double? { return (v as? NSNumber)?.doubleValue }
@@ -157,6 +197,7 @@ final class RenderScene {
         let k0: Int
         let frames: [[Double]]
         let pref: CGAffineTransform     // поворот хранения исходника
+        let fx: ExportPlan.Fx?
     }
     struct Overlay {
         let image: CIImage
@@ -169,14 +210,16 @@ final class RenderScene {
     let layers: [[Item]]
     let overlays: [Overlay]
     let grade: [Double]?
+    let luts: [Data]
     private var lastMain: CIImage?      // основной слой, если кадра на стыке нет
 
-    init(size: CGSize, fps: Double, layers: [[Item]], overlays: [Overlay], grade: [Double]?) {
+    init(size: CGSize, fps: Double, layers: [[Item]], overlays: [Overlay], grade: [Double]?, luts: [Data]) {
         self.size = size
         self.fps = fps
         self.layers = layers
         self.overlays = overlays
         self.grade = grade
+        self.luts = luts
     }
 
     // Вызывается только с очереди композитора — по одному кадру за раз.
@@ -188,6 +231,10 @@ final class RenderScene {
             if let item = RenderScene.item(in: layer, at: t), let buffer = frame(item.trackID) {
                 let row = sample(item, at: t)
                 var source = CIImage(cvPixelBuffer: buffer)
+                if let fx = item.fx {
+                    let cube: Data? = luts.indices.contains(fx.lut) ? luts[fx.lut] : nil
+                    source = RenderScene.effected(source, fx, cube: cube, frame: Int((t * fps).rounded()))
+                }
                 if let g = grade { source = RenderScene.graded(source, g) }
                 let m = RenderScene.placement(source.extent.size, item.pref, row, out: size)
                 var image = source.transformed(by: m)
@@ -238,6 +285,109 @@ final class RenderScene {
         return flipIn.concatenating(upright).concatenating(unit).concatenating(plan).concatenating(flipOut)
     }
 
+    // Настройки цвета куска — как в шейдере превью, в том же порядке:
+    // резкость -> таблица цвета -> виньетка -> зерно. Кадр — в своих точках,
+    // до поворота и растяжения на выход.
+    static func effected(_ image: CIImage, _ fx: ExportPlan.Fx, cube: Data?, frame: Int) -> CIImage {
+        let extent = image.extent
+        var c = image
+        // Резкость: c + k·(c − среднее четырёх соседей) — свёртка 3×3. Края
+        // кадра повторяются, как у текстуры превью.
+        if fx.sharpen > 0 {
+            let k = CGFloat(fx.sharpen), q = -k / 4
+            let weights: [CGFloat] = [0, q, 0, q, 1 + k, q, 0, q, 0]
+            c = c.clampedToExtent()
+                .applyingFilter("CIConvolution3X3", parameters: [
+                    "inputWeights": CIVector(values: weights, count: 9),
+                    "inputBias": NSNumber(value: 0),
+                ])
+                .cropped(to: extent)
+                .applyingFilter("CIColorClamp", parameters: [:])
+        }
+        // Таблица цвета — те же байты, что у превью и экспорта страницы.
+        if let data = cube, !data.isEmpty {
+            c = c.applyingFilter("CIColorCube", parameters: [
+                "inputCubeDimension": NSNumber(value: ExportPlan.lutN),
+                "inputCubeData": data,
+            ])
+        }
+        // Виньетка по кадру клипа: форма S растягивается на кадр, сила a.
+        // Темнее: c·(1 − a·S); светлее: c + a·S − c·a·S (экран).
+        if fx.vignette != 0 {
+            let a = CGFloat(abs(fx.vignette))
+            let mask = RenderScene.vignetteMask
+            let me = mask.extent
+            let fitted = mask.clampedToExtent()
+                .transformed(by: CGAffineTransform(scaleX: extent.width / me.width, y: extent.height / me.height)
+                    .concatenating(CGAffineTransform(translationX: extent.minX, y: extent.minY)))
+                .cropped(to: extent)
+            let dark = fx.vignette > 0
+            let s = dark ? -a : a, b: CGFloat = dark ? 1 : 0
+            let m = fitted.applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: s, y: 0, z: 0, w: 0),
+                "inputGVector": CIVector(x: 0, y: s, z: 0, w: 0),
+                "inputBVector": CIVector(x: 0, y: 0, z: s, w: 0),
+                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+                "inputBiasVector": CIVector(x: b, y: b, z: b, w: 0),
+            ])
+            c = m.applyingFilter(dark ? "CIMultiplyCompositing" : "CIScreenBlendMode",
+                                 parameters: [kCIInputBackgroundImageKey: c])
+        }
+        // Зерно: c + (n − ½)·a, n — одноцветный шум по точкам кадра, у каждого
+        // кадра свой. Через смешивание по маске: (c − a/2) + n·a — без
+        // сложения картинок, которое путает прозрачность.
+        if fx.grain > 0, let random = CIFilter(name: "CIRandomGenerator")?.outputImage {
+            let a = CGFloat(fx.grain), h = a / 2
+            let shift = CGAffineTransform(translationX: CGFloat((frame * 97) % 509), y: CGFloat((frame * 211) % 499))
+            let noise = random.transformed(by: shift)
+                .cropped(to: extent)
+                .settingAlphaOne(in: extent)
+                .applyingFilter("CIColorMatrix", parameters: [
+                    "inputRVector": CIVector(x: 1, y: 0, z: 0, w: 0),
+                    "inputGVector": CIVector(x: 1, y: 0, z: 0, w: 0),
+                    "inputBVector": CIVector(x: 1, y: 0, z: 0, w: 0),
+                    "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1),
+                    "inputBiasVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+                ])
+            let lighter = c.applyingFilter("CIColorMatrix", parameters: [
+                "inputBiasVector": CIVector(x: h, y: h, z: h, w: 0),
+            ])
+            let darker = c.applyingFilter("CIColorMatrix", parameters: [
+                "inputBiasVector": CIVector(x: -h, y: -h, z: -h, w: 0),
+            ])
+            c = lighter.applyingFilter("CIBlendWithMask", parameters: [
+                kCIInputBackgroundImageKey: darker,
+                kCIInputMaskImageKey: noise,
+            ]).applyingFilter("CIColorClamp", parameters: [:])
+        }
+        return c.cropped(to: extent)
+    }
+
+    // Форма виньетки S: 0 в центре, 1 в углах — как в шейдере превью:
+    // d = |(uv − ½)·2|·√½, S = smoothstep(0.35, 1, d). 512×512 хватает:
+    // растянутая на кадр, она расходится с формулой меньше 1/255
+    // (tests/unit/nativeplan.test.mjs). Считается один раз.
+    static let vignetteMask: CIImage = {
+        let n = 512
+        var px = [Float](repeating: 1, count: n * n * 4)
+        for y in 0..<n {
+            for x in 0..<n {
+                let u = (Double(x) + 0.5) / Double(n) - 0.5
+                let v = (Double(y) + 0.5) / Double(n) - 0.5
+                let d = (u * u + v * v).squareRoot() * 2 * 0.70710678
+                let t = min(1, max(0, (d - 0.35) / 0.65))
+                let s = Float(t * t * (3 - 2 * t))
+                let i = (y * n + x) * 4
+                px[i] = s
+                px[i + 1] = s
+                px[i + 2] = s
+            }
+        }
+        let data = px.withUnsafeBufferPointer { Data(buffer: $0) }
+        return CIImage(bitmapData: data, bytesPerRow: n * 4 * MemoryLayout<Float>.size,
+                       size: CGSize(width: n, height: n), format: .RGBAf, colorSpace: nil)
+    }()
+
     // Цвет как в шейдере превью: матрица 3×3 и сдвиг, затем обрезка в 0..1.
     static func graded(_ image: CIImage, _ g: [Double]) -> CIImage {
         guard g.count >= 12 else { return image }
@@ -272,9 +422,12 @@ final class RyndiInstruction: NSObject, AVVideoCompositionInstructionProtocol {
 
 final class RyndiCompositor: NSObject, AVVideoCompositing {
     // Без цветового управления — как WebGL превью (см. шапку файла).
+    // Промежуточные — половинной точности явно: зерну и виньетке нужны
+    // значения за пределами 0…1 до последней обрезки, как в шейдере.
     static let context = CIContext(options: [
         .workingColorSpace: NSNull(),
         .outputColorSpace: NSNull(),
+        .workingFormat: NSNumber(value: CIFormat.RGBAh.rawValue),
         .cacheIntermediates: false,
     ])
 
@@ -465,7 +618,8 @@ final class NativeExporter {
                 }
                 try place(track, src, at: it.at, from: it.from, dur: it.dur, ends: &ends)
                 items.append(RenderScene.Item(trackID: track.trackID, at: it.at, end: it.at + it.dur,
-                                              k0: it.k0, frames: it.frames, pref: src.preferredTransform))
+                                              k0: it.k0, frames: it.frames, pref: src.preferredTransform,
+                                              fx: it.fx))
             }
             sceneLayers.append(items)
         }
@@ -542,7 +696,7 @@ final class NativeExporter {
         }
 
         let scene = RenderScene(size: CGSize(width: plan.width, height: plan.height), fps: Double(plan.fps),
-                                layers: sceneLayers, overlays: overlays, grade: plan.grade)
+                                layers: sceneLayers, overlays: overlays, grade: plan.grade, luts: plan.luts)
         let vc = AVMutableVideoComposition()
         vc.customVideoCompositorClass = RyndiCompositor.self
         vc.renderSize = scene.size
