@@ -44,10 +44,11 @@ final class MediaBridge: NSObject {
     // владельца. wave — волна телефоном, audio — звук отдельным файлом,
     // ramps — плавная громкость по точкам в экспорте телефоном (сборка №13),
     // read — байты звукового файла ролика кусками: звук превью одним потоком,
-    // как в экспорте (сборка №14, MediaAudio.swift).
+    // как в экспорте (сборка №14, MediaAudio.swift). gallery — своя галерея
+    // с альбомами и меткой цвета HDR (сборка №16, MediaGallery.swift).
     static var capsScript: String {
         let build = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? ""
-        return "window.__ryndiApp = { version: 3, build: '\(build)', caps: ['pick', 'export', 'photos', 'share', 'site', 'wave', 'audio', 'ramps', 'read', 'adjust'] };"
+        return "window.__ryndiApp = { version: 3, build: '\(build)', caps: ['pick', 'export', 'photos', 'share', 'site', 'wave', 'audio', 'ramps', 'read', 'adjust', 'gallery'] };"
     }
 
     init(host: UIViewController) {
@@ -60,6 +61,7 @@ final class MediaBridge: NSObject {
     // Доступ для обработчика схемы, который лежит в соседнем файле.
     // В Swift private ограничен файлом, поэтому поля отдаём через методы.
     func proxyFile(_ id: String) -> URL? { files[id] }
+    func rememberFile(_ id: String, _ url: URL) { files[id] = url }
     func markStopped(_ key: ObjectIdentifier) { stopped.insert(key) }
     func unmarkStopped(_ key: ObjectIdentifier) { stopped.remove(key) }
     func isStopped(_ key: ObjectIdentifier) -> Bool { stopped.contains(key) }
@@ -79,6 +81,8 @@ final class MediaBridge: NSObject {
         case "wave":          makeWave(body["id"] as? String, buckets: (body["buckets"] as? Int) ?? 2000)
         case "audio":         makeAudioFile(body["id"] as? String)
         case "read":          readAudioBytes(body)
+        case "gallery-albums", "gallery-assets", "gallery-use":
+            galleryCommand(body["cmd"] as? String ?? "", body)
         default:              break
         }
     }

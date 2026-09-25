@@ -47,6 +47,25 @@ extension MediaBridge: WKURLSchemeHandler {
         let id = (url.lastPathComponent as NSString).deletingPathExtension
         let rangeHeader = task.request.value(forHTTPHeaderField: "Range")
 
+        // ryndi-media://thumb/<id>.jpg?s=300 — картинка для сетки галереи (MediaGallery.swift).
+        if url.host == "thumb" {
+            let size = Int(URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "s" })?.value ?? "") ?? 300
+            galleryThumb(id, size: size) { [weak self] data in
+                guard let self = self else { return }
+                guard let data = data else {
+                    self.respond(task, key: key, status: 404, headers: [:], body: Data())
+                    return
+                }
+                var headers = MediaBridge.cors
+                headers["Content-Type"] = "image/jpeg"
+                headers["Content-Length"] = String(data.count)
+                headers["Cache-Control"] = "max-age=3600"
+                self.respond(task, key: key, status: 200, headers: headers, body: data)
+            }
+            return
+        }
+
         // ryndi-media://audio/<id>.m4a — звук ролика отдельным файлом (MediaAudio.swift).
         if url.host == "audio" {
             guard let file = audioFiles[id] else {
