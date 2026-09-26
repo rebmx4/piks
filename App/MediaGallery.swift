@@ -100,7 +100,9 @@ extension MediaBridge {
         let image = Int(PHAssetMediaType.image.rawValue)
         let live = Int(PHAssetMediaSubtype.photoLive.rawValue)
         switch kind {
-        case "photo": return NSPredicate(format: "mediaType == %d AND (mediaSubtypes & %d) == 0", image, live)
+        // «Кроме живых» — только через NOT (… != 0): форма «& … == 0» у PhotoKit
+        // молча даёт пустой ответ (известная ошибка, форумы Apple, тема 44133).
+        case "photo": return NSPredicate(format: "mediaType == %d AND NOT ((mediaSubtypes & %d) != 0)", image, live)
         case "live":  return NSPredicate(format: "mediaType == %d AND (mediaSubtypes & %d) != 0", image, live)
         default:      return NSPredicate(format: "mediaType == %d", Int(PHAssetMediaType.video.rawValue))
         }
@@ -167,30 +169,45 @@ extension MediaBridge {
                 continue
             }
             group.enter()
-            let opts = PHVideoRequestOptions()
-            opts.isNetworkAccessAllowed = true          // ролик может лежать в iCloud
-            opts.deliveryMode = .highQualityFormat
-            opts.version = .current
-            PHImageManager.default().requestAVAsset(forVideo: asset, options: opts) { [weak self] avAsset, _, _ in
-                DispatchQueue.main.async {
-                    defer { group.leave() }
-                    guard let self = self, let ua = avAsset as? AVURLAsset,
-                          FileManager.default.isReadableFile(atPath: ua.url.path) else {
-                        out[i] = ["id": id, "error": "ролик недоступен"]
-                        return
-                    }
-                    self.rememberFile(id, ua.url)
+            galleryFile(asset, version: .current) { [weak self] ua in
+                // Размер, длительность и метка цвета — не на главном потоке.
+                var row: [String: Any] = ["id": id, "error": "ролик недоступен"]
+                if let ua = ua {
                     let attrs = try? FileManager.default.attributesOfItem(atPath: ua.url.path)
-                    out[i] = ["id": id, "url": "\(MediaBridge.scheme)://orig/\(id).mp4",
-                              "bytes": (attrs?[.size] as? Int) ?? 0,
-                              "seconds": CMTimeGetSeconds(ua.duration),
-                              "w": asset.pixelWidth, "h": asset.pixelHeight,
-                              "transfer": MediaBridge.transferOf(ua)]
+                    let secs = CMTimeGetSeconds(ua.duration)
+                    row = ["id": id, "url": "\(MediaBridge.scheme)://orig/\(id).mp4",
+                           "bytes": (attrs?[.size] as? Int) ?? 0,
+                           "seconds": secs.isFinite ? secs : 0,   // NaN в JSON уронил бы приложение
+                           "w": asset.pixelWidth, "h": asset.pixelHeight,
+                           "transfer": MediaBridge.transferOf(ua)]
+                }
+                DispatchQueue.main.async {
+                    if let ua = ua { self?.rememberFile(id, ua.url) }
+                    out[i] = row
+                    group.leave()
                 }
             }
         }
         group.notify(queue: .main) { [weak self] in
             self?.send(["event": "gallery-use", "id": req, "items": out])
+        }
+    }
+
+    // Файл ролика. Замедленное видео (slo-mo) в версии «как сейчас» телефон
+    // отдаёт сборкой (AVComposition), а не файлом — тогда берём оригинал.
+    private func galleryFile(_ asset: PHAsset, version: PHVideoRequestOptionsVersion, done: @escaping (AVURLAsset?) -> Void) {
+        let opts = PHVideoRequestOptions()
+        opts.isNetworkAccessAllowed = true          // ролик может лежать в iCloud
+        opts.deliveryMode = .highQualityFormat
+        opts.version = version
+        PHImageManager.default().requestAVAsset(forVideo: asset, options: opts) { [weak self] avAsset, _, _ in
+            if let ua = avAsset as? AVURLAsset, FileManager.default.isReadableFile(atPath: ua.url.path) {
+                done(ua)
+            } else if version == .current, let self = self {
+                self.galleryFile(asset, version: .original, done: done)
+            } else {
+                done(nil)
+            }
         }
     }
 
