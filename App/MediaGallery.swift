@@ -1,6 +1,7 @@
 import UIKit
 import Photos
 import AVFoundation
+import ImageIO
 
 // Своя галерея для Ryndi, как у CapCut (владелец, 26.09.2026): вверху
 // «Недавние ▾» (стрелка — список альбомов) и «Избранные», ниже «Видео / Фото /
@@ -30,7 +31,7 @@ extension MediaBridge {
             switch cmd {
             case "gallery-albums": self.galleryAlbums(req)
             case "gallery-assets": self.galleryAssets(req, body)
-            case "gallery-use":    self.galleryUse(req, (body["ids"] as? [String]) ?? [])
+            case "gallery-use":    self.galleryUse(req, (body["ids"] as? [String]) ?? [], kind: body["kind"] as? String)
             default: break
             }
         }
@@ -158,13 +159,55 @@ extension MediaBridge {
 
     // MARK: - Взять выбранные
 
-    private func galleryUse(_ req: String, _ ids: [String]) {
+    // Сборка №17: фото — картинкой JPEG (kind «photo»), живое фото на вкладке
+    // «Живые фото» (kind «live») — его роликом, номер «l…».
+    private func galleryUse(_ req: String, _ ids: [String], kind: String? = nil) {
         var out: [[String: Any]] = Array(repeating: [:], count: ids.count)
         let group = DispatchGroup()
         for (i, id) in ids.enumerated() {
             guard let local = MediaBridge.localIdentifier(from: id),
-                  let asset = PHAsset.fetchAssets(withLocalIdentifiers: [local], options: nil).firstObject,
-                  asset.mediaType == .video else {
+                  let asset = PHAsset.fetchAssets(withLocalIdentifiers: [local], options: nil).firstObject else {
+                out[i] = ["id": id, "error": "не найдено в галерее"]
+                continue
+            }
+            if asset.mediaType == .image {
+                let live = (kind == "live" || id.hasPrefix("l")) && asset.mediaSubtypes.contains(.photoLive)
+                let fileId = (live ? "l" : "p") + String(id.dropFirst())
+                group.enter()
+                let finish: (URL?) -> Void = { url in
+                    // resolveFile отвечает на главной очереди — out пишется только здесь.
+                    if let url = url {
+                        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+                        var row: [String: Any] = ["id": fileId, "bytes": (attrs?[.size] as? Int) ?? 0,
+                                                  "w": asset.pixelWidth, "h": asset.pixelHeight,
+                                                  "kind": live ? "live" : "photo"]
+                        if live {
+                            let ua = AVURLAsset(url: url)
+                            let secs = CMTimeGetSeconds(ua.duration)
+                            row["url"] = "\(MediaBridge.scheme)://orig/\(fileId).mov"
+                            row["seconds"] = secs.isFinite ? secs : 0
+                            row["transfer"] = MediaBridge.transferOf(ua)
+                        } else {
+                            row["url"] = "\(MediaBridge.scheme)://orig/\(fileId).jpg"
+                            row["seconds"] = 0
+                            // Размеры — отданного файла: стоя, после правок, не больше 4096.
+                            if let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+                               let p = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+                               let w = p[kCGImagePropertyPixelWidth] as? Int, let h = p[kCGImagePropertyPixelHeight] as? Int {
+                                row["w"] = w
+                                row["h"] = h
+                            }
+                        }
+                        out[i] = row
+                    } else {
+                        out[i] = ["id": id, "error": live ? "ролик живого фото недоступен" : "фото недоступно"]
+                    }
+                    group.leave()
+                }
+                resolveFile(fileId, done: finish)
+                continue
+            }
+            guard asset.mediaType == .video else {
                 out[i] = ["id": id, "error": "не видео"]
                 continue
             }

@@ -31,6 +31,24 @@ import UIKit
 // 33³ (те же байты, что у превью) и числа резкости, виньетки, зерна. Их
 // формулы — как в шейдере превью (web/engine/grade.js), к кадру клипа до
 // общего цвета (RenderScene.effected).
+//
+// Сборка №17 (владелец, 26.09.2026: «чтобы меньше делать сборок»): общие
+// кубики, из которых страница собирает функции без новых сборок. Всё
+// необязательно — старые планы читаются как раньше.
+//   - скорость: у куска и звука src — длина в исходнике (dur — на ленте);
+//     отрезок растягивается scaleTimeRange, звук с сохранением тона;
+//   - обрезка: crop [x, y, w, h] — доли кадра, как его видит зритель; матрица
+//     плана по-прежнему от ПОЛНОГО кадра;
+//   - маска: mask — номер картинки в masks (PNG, белое — видно) или список
+//     номеров по кадрам с k0 (−1 — без маски), в долях полного кадра куска,
+//     едет с куском;
+//   - нахлёст: куски одного слоя могут идти одновременно (переходы) — каждый
+//     со своими строками кадра и прозрачностью;
+//   - фильтры Core Image по имени: ci у куска (к кадру куска: точки — в
+//     пикселях исходника стоя, y вверх) и у плана (ко всему кадру, под
+//     надписями: пиксели выхода, y вверх) — { name, params, anim, k0, clamp };
+//   - фото: ролик плана — картинка (jpg/png/heic): неподвижный кадр, движение —
+//     строками кадра, как у видео. В плане нужен хотя бы один кусок видео.
 
 // MARK: - План со страницы
 
@@ -43,6 +61,20 @@ struct ExportPlan {
         let k0: Int
         let frames: [[Double]]      // [a, b, c, d, tx, ty, прозрачность] на кадр, начиная с k0
         let fx: Fx?                 // настройки цвета куска, nil — без них
+        let src: Double?            // длина в исходнике (скорость), nil — равна dur
+        let crop: CGRect?           // обрезка: доли кадра, как видит зритель, y вниз
+        let mask: [Int]             // маски: одна на кусок или по кадру с k0, −1 — без маски
+        let ci: [CiStep]            // фильтры Core Image к кадру куска
+    }
+    // Фильтр Core Image по имени: params — постоянные значения (число, массив
+    // 2…4 чисел — вектор, у ключей с Color — цвет), anim — числа по кадрам
+    // (с кадра k0 выхода), clamp — края повторяются, итог обрезан по кадру.
+    struct CiStep {
+        let name: String
+        let params: [String: Any]
+        let anim: [String: [Double]]
+        let k0: Int
+        let clamp: Bool
     }
     // Настройки цвета куска — готовые числа формул шейдера превью.
     struct Fx {
@@ -59,6 +91,7 @@ struct ExportPlan {
         let volume: Double
         // Точки громкости на ленте (секунды выхода): между ними — плавно.
         let keys: [(at: Double, g: Double)]
+        let src: Double?            // длина в исходнике (скорость), nil — равна dur
     }
     struct Overlay {
         let png: Data
@@ -79,6 +112,8 @@ struct ExportPlan {
     let sounds: [Sound]
     let grade: [Double]?
     let luts: [Data]                // таблицы цвета для CIColorCube: 33³ × RGBA, Float32
+    let masks: [Data]               // маски кусков: PNG
+    let ci: [CiStep]                // фильтры ко всему кадру
     let save: Bool
 
     static let lutN = 33
@@ -122,8 +157,18 @@ struct ExportPlan {
                             vignette: ExportPlan.num(f["vignette"]) ?? 0,
                             grain: ExportPlan.num(f["grain"]) ?? 0)
                 }
+                var crop: CGRect? = nil
+                let c = ((raw["crop"] as? [Any]) ?? []).compactMap { ExportPlan.num($0) }
+                if c.count == 4, c[2] > 0.001, c[3] > 0.001 {
+                    let r = CGRect(x: c[0], y: c[1], width: c[2], height: c[3])
+                        .intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+                    if !r.isNull, r.width > 0.001, r.height > 0.001 { crop = r }
+                }
+                let srcLen = ExportPlan.num(raw["src"]).flatMap { $0 > 0 ? $0 : nil }
                 items.append(Item(media: mid, at: at, from: from, dur: dur,
-                                  k0: ExportPlan.int(raw["k0"]) ?? 0, frames: rows, fx: fx))
+                                  k0: ExportPlan.int(raw["k0"]) ?? 0, frames: rows, fx: fx,
+                                  src: srcLen, crop: crop, mask: ExportPlan.ints(raw["mask"]),
+                                  ci: ExportPlan.steps(raw["ci"])))
             }
             allLayers.append(items)
         }
@@ -141,7 +186,8 @@ struct ExportPlan {
                 return (at: kat, g: g)
             }
             allSounds.append(Sound(media: mid, at: at, from: from, dur: dur,
-                                   volume: ExportPlan.num(raw["volume"]) ?? 1, keys: keys))
+                                   volume: ExportPlan.num(raw["volume"]) ?? 1, keys: keys,
+                                   src: ExportPlan.num(raw["src"]).flatMap { $0 > 0 ? $0 : nil }))
         }
         sounds = allSounds
 
@@ -175,10 +221,34 @@ struct ExportPlan {
             tables.append(floats.withUnsafeBufferPointer { Data(buffer: $0) })
         }
         luts = tables
+
+        masks = ((json["masks"] as? [Any]) ?? []).map { raw in
+            ((raw as? String).flatMap { Data(base64Encoded: $0) }) ?? Data()
+        }
+        ci = ExportPlan.steps(json["ci"])
     }
 
     static func num(_ v: Any?) -> Double? { return (v as? NSNumber)?.doubleValue }
     static func int(_ v: Any?) -> Int? { return (v as? NSNumber)?.intValue }
+    static func ints(_ v: Any?) -> [Int] {
+        if let list = v as? [Any] { return list.map { ExportPlan.int($0) ?? -1 } }
+        return ExportPlan.int(v).map { [$0] } ?? []
+    }
+
+    static func steps(_ v: Any?) -> [CiStep] {
+        var out: [CiStep] = []
+        for raw in (v as? [[String: Any]]) ?? [] {
+            guard let name = raw["name"] as? String, name.hasPrefix("CI") else { continue }
+            var anim: [String: [Double]] = [:]
+            for (key, list) in (raw["anim"] as? [String: Any]) ?? [:] {
+                let values = ((list as? [Any]) ?? []).compactMap { ExportPlan.num($0) }
+                if !values.isEmpty { anim[key] = values }
+            }
+            out.append(CiStep(name: name, params: (raw["params"] as? [String: Any]) ?? [:], anim: anim,
+                              k0: ExportPlan.int(raw["k0"]) ?? 0, clamp: (raw["clamp"] as? Bool) ?? true))
+        }
+        return out
+    }
 }
 
 struct ExportError: LocalizedError {
@@ -191,13 +261,17 @@ struct ExportError: LocalizedError {
 
 final class RenderScene {
     struct Item {
-        let trackID: CMPersistentTrackID
-        let at: Double
+        let trackID: CMPersistentTrackID    // у фото — kCMPersistentTrackID_Invalid
+        let still: CIImage?                 // фото: кадр стоя, y вверх, от (0, 0)
+        var at: Double
         let end: Double
         let k0: Int
         let frames: [[Double]]
         let pref: CGAffineTransform     // поворот хранения исходника
         let fx: ExportPlan.Fx?
+        let crop: CGRect?
+        let mask: [CIImage?]                // одна на кусок или по кадру с k0
+        let ci: [ExportPlan.CiStep]
     }
     struct Overlay {
         let image: CIImage
@@ -211,52 +285,107 @@ final class RenderScene {
     let overlays: [Overlay]
     let grade: [Double]?
     let luts: [Data]
+    let ci: [ExportPlan.CiStep]         // ко всему кадру, под надписями
     private var lastMain: CIImage?      // основной слой, если кадра на стыке нет
 
-    init(size: CGSize, fps: Double, layers: [[Item]], overlays: [Overlay], grade: [Double]?, luts: [Data]) {
+    init(size: CGSize, fps: Double, layers: [[Item]], overlays: [Overlay], grade: [Double]?, luts: [Data],
+         ci: [ExportPlan.CiStep] = []) {
         self.size = size
         self.fps = fps
         self.layers = layers
         self.overlays = overlays
         self.grade = grade
         self.luts = luts
+        self.ci = ci
     }
 
     // Вызывается только с очереди композитора — по одному кадру за раз.
     func compose(at t: Double, frame: (CMPersistentTrackID) -> CVPixelBuffer?) -> CIImage {
         let bounds = CGRect(origin: .zero, size: size)
         var out = CIImage(color: CIColor(red: 0, green: 0, blue: 0)).cropped(to: bounds)
+        let k = Int((t * fps).rounded())
         for (index, layer) in layers.enumerated() {
+            // Куски слоя в этот миг: обычно один, при переходе — два (нахлёст).
             var placed: CIImage? = nil
-            if let item = RenderScene.item(in: layer, at: t), let buffer = frame(item.trackID) {
-                let row = sample(item, at: t)
-                var source = CIImage(cvPixelBuffer: buffer)
-                if let fx = item.fx {
-                    let cube: Data? = luts.indices.contains(fx.lut) ? luts[fx.lut] : nil
-                    source = RenderScene.effected(source, fx, cube: cube, frame: Int((t * fps).rounded()))
-                }
-                if let g = grade { source = RenderScene.graded(source, g) }
-                let m = RenderScene.placement(source.extent.size, item.pref, row, out: size)
-                var image = source.transformed(by: m)
-                let opacity = row.count > 6 ? row[6] : 1
-                if opacity < 0.999 {
-                    image = image.applyingFilter("CIColorMatrix", parameters: [
-                        "inputAVector": CIVector(x: 0, y: 0, z: 0, w: CGFloat(max(0, opacity))),
-                    ])
-                }
-                placed = image
-                if index == 0 { lastMain = image }
-            } else if index == 0 {
+            for item in RenderScene.items(in: layer, at: t) {
+                guard let image = render(item, at: t, k: k, frame: frame) else { continue }
+                placed = placed.map { image.composited(over: $0) } ?? image
+            }
+            if index == 0 {
                 // Основной слой не пустеет: на стыке кусков или в последнем
                 // кадре держим прошлый кадр, а не вспышку чёрного.
-                placed = lastMain
+                if let image = placed { lastMain = image } else { placed = lastMain }
             }
             if let image = placed { out = image.composited(over: out) }
         }
+        for step in ci { out = RenderScene.filtered(out, step, k: k, clamp: bounds) }
         for o in overlays where t + 1e-6 >= o.at && t + 1e-6 < o.end {
             out = o.image.composited(over: out)
         }
         return out.cropped(to: bounds)
+    }
+
+    // Кадр куска на выходе: обрезка -> цвет -> фильтры -> матрица -> маска ->
+    // прозрачность. nil — кадра нет (стык, конец ролика).
+    private func render(_ item: Item, at t: Double, k: Int,
+                        frame: (CMPersistentTrackID) -> CVPixelBuffer?) -> CIImage? {
+        var source: CIImage
+        let raw: CGSize
+        if let still = item.still {
+            source = still
+            raw = still.extent.size
+        } else {
+            guard let buffer = frame(item.trackID) else { return nil }
+            source = CIImage(cvPixelBuffer: buffer)
+            raw = CGSize(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
+        }
+        // Обрезка — до цвета: виньетка и зерно ложатся на рамку, как в превью.
+        // Матрица — всё равно от ПОЛНОГО кадра (raw), не от обрезанного.
+        if let crop = item.crop {
+            let full = CGRect(origin: .zero, size: raw)
+            let r = crop.applying(RenderScene.toUnit(raw, item.pref).inverted()).integral.intersection(full)
+            if !r.isNull, r.width >= 1, r.height >= 1 { source = source.cropped(to: r) }
+        }
+        let row = sample(item, at: t)
+        if let fx = item.fx {
+            let cube: Data? = luts.indices.contains(fx.lut) ? luts[fx.lut] : nil
+            source = RenderScene.effected(source, fx, cube: cube, frame: k)
+        }
+        if let g = grade { source = RenderScene.graded(source, g) }
+        if !item.ci.isEmpty {
+            // Фильтры куска — в кадре стоя (как видит зритель, пиксели
+            // исходника, y вверх): иначе углы и точки легли бы боком.
+            let shown = CGRect(origin: .zero, size: raw).applying(item.pref)
+            let up = CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: raw.height)
+                .concatenating(item.pref)
+                .concatenating(CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: -shown.minX, ty: shown.maxY))
+            var u = source.transformed(by: up)
+            for step in item.ci { u = RenderScene.filtered(u, step, k: k, clamp: u.extent) }
+            source = u.transformed(by: up.inverted())
+        }
+        let m = RenderScene.placement(raw, item.pref, row, out: size)
+        var image = source.transformed(by: m, highQualityDownsample: item.still != nil)
+        let maskNow: CIImage? = item.mask.isEmpty ? nil
+            : item.mask[max(0, min(item.mask.count - 1, k - item.k0))]
+        if let mask = maskNow {
+            // Маска в долях полного кадра куска (y вниз) — той же матрицей.
+            let me = mask.extent
+            let toUnit = CGAffineTransform(a: 1 / max(me.width, 1), b: 0, c: 0, d: -1 / max(me.height, 1),
+                                           tx: -me.minX / max(me.width, 1), ty: 1 + me.minY / max(me.height, 1))
+            let placedMask = mask.transformed(by: toUnit.concatenating(RenderScene.planMatrix(row))
+                .concatenating(CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: size.height)))
+            image = image.applyingFilter("CIBlendWithMask", parameters: [
+                kCIInputBackgroundImageKey: CIImage.empty(),
+                kCIInputMaskImageKey: placedMask,
+            ])
+        }
+        let opacity = row.count > 6 ? row[6] : 1
+        if opacity < 0.999 {
+            image = image.applyingFilter("CIColorMatrix", parameters: [
+                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: CGFloat(max(0, opacity))),
+            ])
+        }
+        return image
     }
 
     private func sample(_ item: Item, at t: Double) -> [Double] {
@@ -265,24 +394,64 @@ final class RenderScene {
         return item.frames[max(0, min(item.frames.count - 1, k))]
     }
 
-    static func item(in layer: [Item], at t: Double) -> Item? {
+    static func items(in layer: [Item], at t: Double) -> [Item] {
         let tt = t + 1e-6
-        for it in layer where tt >= it.at && tt < it.end { return it }
-        return nil
+        return layer.filter { tt >= $0.at && tt < $0.end }
     }
 
-    // Кадр декодера (Core Image: y вверх, хранение боком) -> пиксели выхода.
-    // Матрица плана работает в долях кадра, КАК ЕГО ВИДИТ зритель, y вниз.
-    static func placement(_ raw: CGSize, _ pref: CGAffineTransform, _ r: [Double],
-                          out: CGSize) -> CGAffineTransform {
+    // Кадр декодера (Core Image: y вверх, хранение боком) -> доли кадра, КАК
+    // ЕГО ВИДИТ зритель, y вниз.
+    static func toUnit(_ raw: CGSize, _ pref: CGAffineTransform) -> CGAffineTransform {
         let flipIn = CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: raw.height)
         let shown = CGRect(origin: .zero, size: raw).applying(pref)
         let upright = pref.concatenating(CGAffineTransform(translationX: -shown.minX, y: -shown.minY))
         let unit = CGAffineTransform(scaleX: 1 / max(shown.width, 1), y: 1 / max(shown.height, 1))
-        let plan = CGAffineTransform(a: CGFloat(r[0]), b: CGFloat(r[1]), c: CGFloat(r[2]),
-                                     d: CGFloat(r[3]), tx: CGFloat(r[4]), ty: CGFloat(r[5]))
+        return flipIn.concatenating(upright).concatenating(unit)
+    }
+
+    static func planMatrix(_ r: [Double]) -> CGAffineTransform {
+        return CGAffineTransform(a: CGFloat(r[0]), b: CGFloat(r[1]), c: CGFloat(r[2]),
+                                 d: CGFloat(r[3]), tx: CGFloat(r[4]), ty: CGFloat(r[5]))
+    }
+
+    // Кадр декодера -> пиксели выхода. Матрица плана работает в долях кадра,
+    // КАК ЕГО ВИДИТ зритель, y вниз.
+    static func placement(_ raw: CGSize, _ pref: CGAffineTransform, _ r: [Double],
+                          out: CGSize) -> CGAffineTransform {
         let flipOut = CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: out.height)
-        return flipIn.concatenating(upright).concatenating(unit).concatenating(plan).concatenating(flipOut)
+        return toUnit(raw, pref).concatenating(planMatrix(r)).concatenating(flipOut)
+    }
+
+    // Фильтр Core Image по имени. Значения ставятся только в известные фильтру
+    // ключи и только своего вида (число, вектор, цвет) — иначе Core Image
+    // уронил бы приложение; неизвестный фильтр пропускается.
+    static func filtered(_ image: CIImage, _ step: ExportPlan.CiStep, k: Int, clamp: CGRect) -> CIImage {
+        guard let f = CIFilter(name: step.name) else { return image }
+        let keys = Set(f.inputKeys)
+        guard keys.contains(kCIInputImageKey) else { return image }
+        f.setDefaults()
+        f.setValue(step.clamp ? image.clampedToExtent() : image, forKey: kCIInputImageKey)
+        func put(_ key: String, _ value: Any) {
+            guard keys.contains(key), key != kCIInputImageKey else { return }
+            let kind = ((f.attributes[key] as? [String: Any])?[kCIAttributeClass] as? String) ?? ""
+            if let n = value as? NSNumber, kind == "NSNumber" {
+                f.setValue(n, forKey: key)
+            } else if let list = value as? [Any] {
+                let v = list.compactMap { ExportPlan.num($0) }.map { CGFloat($0) }
+                if kind == "CIVector", (1...4).contains(v.count) {
+                    f.setValue(CIVector(values: v, count: v.count), forKey: key)
+                } else if kind == "CIColor", v.count >= 3 {
+                    f.setValue(CIColor(red: v[0], green: v[1], blue: v[2], alpha: v.count > 3 ? v[3] : 1), forKey: key)
+                }
+            }
+        }
+        for (key, value) in step.params { put(key, value) }
+        for (key, list) in step.anim {
+            let i = max(0, min(list.count - 1, k - step.k0))
+            put(key, NSNumber(value: list[i]))
+        }
+        guard let out = f.outputImage else { return image }
+        return step.clamp ? out.cropped(to: clamp) : out
     }
 
     // Настройки цвета куска — как в шейдере превью, в том же порядке:
@@ -552,26 +721,37 @@ final class NativeExporter {
 
     // Кусок исходника на дорожку. Дорожка идёт по порядку: пустое место
     // до куска заполняется пустотой, нахлёст от округления срезается.
+    // Скорость (сборка №17): srcDur секунд исходника ложатся на dur секунд
+    // ленты — вставляем отрезок исходника и растягиваем его scaleTimeRange.
+    // Скорость «почти 1» — без растяжения, ровно как до №17 (расчёт в CMTime).
     private func place(_ track: AVMutableCompositionTrack, _ src: AVAssetTrack,
-                       at: Double, from: Double, dur: Double,
+                       at: Double, from: Double, dur: Double, srcDur: Double? = nil,
                        ends: inout [CMPersistentTrackID: CMTime]) throws {
+        var rate = max(0.01, (srcDur ?? dur) / max(dur, 0.000001))   // секунд исходника на секунду ленты
+        if abs(rate - 1) <= 0.0005 { rate = 1 }
         var start = time(at)
         var source = time(from)
-        var length = time(dur)
+        var length = time(rate == 1 ? dur : (srcDur ?? dur))         // длина в исходнике
         let srcEnd = CMTimeRangeGetEnd(src.timeRange)
         if CMTimeCompare(CMTimeAdd(source, length), srcEnd) > 0 { length = CMTimeSubtract(srcEnd, source) }
         let end = ends[track.trackID] ?? CMTime.zero
         if CMTimeCompare(start, end) < 0 {
-            let overlap = CMTimeSubtract(end, start)
+            let overlap = CMTimeSubtract(end, start)                  // на ленте
+            let skip = rate == 1 ? overlap : time(CMTimeGetSeconds(overlap) * rate)
             start = end
-            source = CMTimeAdd(source, overlap)
-            length = CMTimeSubtract(length, overlap)
+            source = CMTimeAdd(source, skip)
+            length = CMTimeSubtract(length, skip)
         } else if CMTimeCompare(start, end) > 0 {
             track.insertEmptyTimeRange(CMTimeRange(start: end, end: start))
         }
         guard CMTimeCompare(length, CMTime.zero) > 0 else { return }
         try track.insertTimeRange(CMTimeRange(start: source, duration: length), of: src, at: start)
-        ends[track.trackID] = CMTimeAdd(start, length)
+        var placed = length                                          // длина на ленте
+        if rate != 1 {
+            placed = time(CMTimeGetSeconds(length) / rate)
+            track.scaleTimeRange(CMTimeRange(start: start, duration: length), toDuration: placed)
+        }
+        ends[track.trackID] = CMTimeAdd(start, placed)
     }
 
     private func build(_ files: [String: URL]) throws {
@@ -587,6 +767,26 @@ final class NativeExporter {
             assets[id] = a
             return a
         }
+        // Фото (сборка №17): картинка стоя, без цветового управления — как видео.
+        var stills: [String: CIImage] = [:]
+        func still(_ id: String) -> CIImage? {
+            if let s = stills[id] { return s }
+            guard let url = files[id], NativeExporter.isImage(url),
+                  let img = CIImage(contentsOf: url, options: [.applyOrientationProperty: true, .colorSpace: NSNull()])
+            else { return nil }
+            let e = img.extent
+            let s = img.transformed(by: CGAffineTransform(translationX: -e.minX, y: -e.minY))
+            stills[id] = s
+            return s
+        }
+        var maskImages: [Int: CIImage] = [:]
+        func maskImage(_ i: Int) -> CIImage? {
+            guard plan.masks.indices.contains(i), !plan.masks[i].isEmpty else { return nil }
+            if let m = maskImages[i] { return m }
+            guard let m = CIImage(data: plan.masks[i], options: [.colorSpace: NSNull()]) else { return nil }
+            maskImages[i] = m
+            return m
+        }
 
         let total = CMTime(value: CMTimeValue(plan.frames), timescale: CMTimeScale(plan.fps))
         var ends: [CMPersistentTrackID: CMTime] = [:]
@@ -594,36 +794,55 @@ final class NativeExporter {
         var firstTrack: AVMutableCompositionTrack? = nil
         var sceneLayers: [[RenderScene.Item]] = []
 
-        // Видео: на каждый слой по дорожке на ролик — куски одного слоя не
-        // пересекаются, а разные ролики не смешиваются на одной дорожке.
+        // Видео: на каждый слой дорожки по роликам — разные ролики не
+        // смешиваются на одной дорожке. Куски одного слоя, идущие одновременно
+        // (переход, сборка №17), — на разные дорожки: дорожка идёт по порядку.
+        let slack = 0.5 / Double(plan.fps)
         for layer in plan.layers {
-            var tracks: [String: AVMutableCompositionTrack] = [:]
+            var tracks: [String: [AVMutableCompositionTrack]] = [:]
             var items: [RenderScene.Item] = []
             for it in layer {
+                if let img = still(it.media) {
+                    items.append(RenderScene.Item(trackID: kCMPersistentTrackID_Invalid, still: img,
+                                                  at: it.at, end: it.at + it.dur, k0: it.k0, frames: it.frames,
+                                                  pref: .identity, fx: it.fx, crop: it.crop,
+                                                  mask: it.mask.map { maskImage($0) }, ci: it.ci))
+                    continue
+                }
                 guard let a = asset(it.media), let src = a.tracks(withMediaType: .video).first else {
                     throw ExportError("в ролике не нашлось видео")
                 }
-                let track: AVMutableCompositionTrack
-                if let known = tracks[it.media] {
-                    track = known
-                } else {
+                var track: AVMutableCompositionTrack? = nil
+                for t in tracks[it.media] ?? [] {
+                    let free = CMTimeGetSeconds(ends[t.trackID] ?? CMTime.zero)
+                    if free <= it.at + slack { track = t; break }
+                }
+                if track == nil {
                     guard let made = comp.addMutableTrack(withMediaType: .video,
                                                           preferredTrackID: kCMPersistentTrackID_Invalid) else {
                         throw ExportError("не создаётся дорожка видео")
                     }
-                    tracks[it.media] = made
+                    tracks[it.media, default: []].append(made)
                     videoIDs.append(made.trackID)
                     if firstTrack == nil { firstTrack = made }
                     track = made
                 }
-                try place(track, src, at: it.at, from: it.from, dur: it.dur, ends: &ends)
-                items.append(RenderScene.Item(trackID: track.trackID, at: it.at, end: it.at + it.dur,
+                guard let chosen = track else { throw ExportError("не создаётся дорожка видео") }
+                try place(chosen, src, at: it.at, from: it.from, dur: it.dur, srcDur: it.src, ends: &ends)
+                items.append(RenderScene.Item(trackID: chosen.trackID, still: nil, at: it.at, end: it.at + it.dur,
                                               k0: it.k0, frames: it.frames, pref: src.preferredTransform,
-                                              fx: it.fx))
+                                              fx: it.fx, crop: it.crop, mask: it.mask.map { maskImage($0) }, ci: it.ci))
+            }
+            // Нахлёст меньше полукадра — округление плана, а не переход: в
+            // кадре один кусок, как до сборки №17 (первый по списку).
+            let order = items.indices.sorted { items[$0].at < items[$1].at }
+            for (p, q) in zip(order, order.dropFirst())
+                where items[q].at < items[p].end && items[p].end - items[q].at < slack {
+                items[q].at = items[p].end
             }
             sceneLayers.append(items)
         }
-        guard let mainTrack = firstTrack else { throw ExportError("в ролике нет кусков") }
+        guard let mainTrack = firstTrack else { throw ExportError("в ролике нет ни одного куска видео") }
         // Композиция не короче ролика: иначе последние кадры не прочитаются.
         let mainEnd = ends[mainTrack.trackID] ?? CMTime.zero
         if CMTimeCompare(mainEnd, total) < 0 {
@@ -647,7 +866,7 @@ final class NativeExporter {
                 chosen = made
             }
             guard let track = chosen else { continue }
-            try place(track, src, at: s.at, from: s.from, dur: s.dur, ends: &ends)
+            try place(track, src, at: s.at, from: s.from, dur: s.dur, srcDur: s.src, ends: &ends)
             let p = params[track.trackID] ?? AVMutableAudioMixInputParameters(track: track)
             if s.keys.count >= 2 {
                 // Точки громкости: уровень в начале куска, дальше между
@@ -696,7 +915,8 @@ final class NativeExporter {
         }
 
         let scene = RenderScene(size: CGSize(width: plan.width, height: plan.height), fps: Double(plan.fps),
-                                layers: sceneLayers, overlays: overlays, grade: plan.grade, luts: plan.luts)
+                                layers: sceneLayers, overlays: overlays, grade: plan.grade, luts: plan.luts,
+                                ci: plan.ci)
         let vc = AVMutableVideoComposition()
         vc.customVideoCompositorClass = RyndiCompositor.self
         vc.renderSize = scene.size
@@ -784,6 +1004,8 @@ final class NativeExporter {
             input.expectsMediaDataInRealTime = false
             let output = AVAssetReaderAudioMixOutput(audioTracks: audioTracks, audioSettings: pcm)
             output.audioMix = mix
+            // Ускоренный и замедленный звук — без смены тона (голос не «мультяшный»).
+            output.audioTimePitchAlgorithm = .spectral
             output.alwaysCopiesSampleData = false
             if writer.canAdd(input) && reader.canAdd(output) {
                 writer.add(input)
@@ -912,6 +1134,10 @@ final class NativeExporter {
             self.send(event)
             self.onFinish?(file)
         }
+    }
+
+    static func isImage(_ url: URL) -> Bool {
+        return ["jpg", "jpeg", "png", "heic", "heif"].contains(url.pathExtension.lowercased())
     }
 
     static func saveToPhotos(_ url: URL, done: @escaping (Bool, String?) -> Void) {

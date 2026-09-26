@@ -82,7 +82,8 @@ extension MediaBridge: WKURLSchemeHandler {
                 self.respond(task, key: key, status: 404, headers: [:], body: Data())
                 return
             }
-            self.serve(task, key: key, fileURL: fileURL, rangeHeader: rangeHeader, type: "video/mp4")
+            // Тип — по расширению файла: ролик, фото, звук страницы (сборка №17).
+            self.serve(task, key: key, fileURL: fileURL, rangeHeader: rangeHeader, type: MediaBridge.mimeType(for: fileURL))
         }
     }
 

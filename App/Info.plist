@@ -23,6 +23,8 @@
 
 	<key>NSCameraUsageDescription</key>
 	<string>The camera lets you take a photo right in the editor to edit it.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Микрофон нужен, чтобы записать голос прямо в редакторе.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Доступ к галерее нужен, чтобы открыть ваш ролик для монтажа без копирования файла целиком.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

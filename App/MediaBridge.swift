@@ -46,9 +46,16 @@ final class MediaBridge: NSObject {
     // read — байты звукового файла ролика кусками: звук превью одним потоком,
     // как в экспорте (сборка №14, MediaAudio.swift). gallery — своя галерея
     // с альбомами и меткой цвета HDR (сборка №16, MediaGallery.swift).
+    // Сборка №17 — общие кубики (NativeExport.swift, MediaFiles.swift,
+    // MediaVision.swift): speed — скорость куска, crop — обрезка, mask — маска
+    // картинкой, overlap — нахлёст кусков (переходы), cifilter — фильтры Core
+    // Image по имени, stills — фото в экспорте, files — файлы от страницы,
+    // photo и live — фото и живые фото из галереи, haptic — вибрация, mic —
+    // микрофон (запись голоса; audio-session — режим звука), vision — разбор
+    // «человек/фон» средствами iOS.
     static var capsScript: String {
         let build = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? ""
-        return "window.__ryndiApp = { version: 3, build: '\(build)', caps: ['pick', 'export', 'photos', 'share', 'site', 'wave', 'audio', 'ramps', 'read', 'adjust', 'gallery'] };"
+        return "window.__ryndiApp = { version: 3, build: '\(build)', caps: ['pick', 'export', 'photos', 'share', 'site', 'wave', 'audio', 'ramps', 'read', 'adjust', 'gallery', 'speed', 'crop', 'mask', 'overlap', 'cifilter', 'stills', 'files', 'photo', 'live', 'haptic', 'mic', 'vision'] };"
     }
 
     init(host: UIViewController) {
@@ -62,6 +69,7 @@ final class MediaBridge: NSObject {
     // В Swift private ограничен файлом, поэтому поля отдаём через методы.
     func proxyFile(_ id: String) -> URL? { files[id] }
     func rememberFile(_ id: String, _ url: URL) { files[id] = url }
+    func forgetFile(_ id: String) { files[id] = nil }
     func markStopped(_ key: ObjectIdentifier) { stopped.insert(key) }
     func unmarkStopped(_ key: ObjectIdentifier) { stopped.remove(key) }
     func isStopped(_ key: ObjectIdentifier) -> Bool { stopped.contains(key) }
@@ -83,6 +91,12 @@ final class MediaBridge: NSObject {
         case "read":          readAudioBytes(body)
         case "gallery-albums", "gallery-assets", "gallery-use":
             galleryCommand(body["cmd"] as? String ?? "", body)
+        case "file-put":      filePut(body)
+        case "file-drop":     fileDrop(body)
+        case "haptic":        haptic(body["style"] as? String)
+        case "audio-session": MediaBridge.audioSession(body["mode"] as? String)
+        case "vision-person": visionPerson(body)
+        case "vision-cancel": visionCancel(body)
         default:              break
         }
     }
@@ -159,8 +173,9 @@ final class MediaBridge: NSObject {
         return "p" + b64
     }
 
+    // «p…» — ролик или фото галереи, «l…» — ролик живого фото (сборка №17).
     static func localIdentifier(from id: String) -> String? {
-        guard id.hasPrefix("p"), id.count > 1 else { return nil }
+        guard id.hasPrefix("p") || id.hasPrefix("l"), id.count > 1 else { return nil }
         var b64 = String(id.dropFirst())
             .replacingOccurrences(of: "-", with: "+")
             .replacingOccurrences(of: "_", with: "/")
@@ -170,14 +185,30 @@ final class MediaBridge: NSObject {
     }
 
     // Файл ролика по номеру из адреса. Ответ всегда на главной очереди.
+    // Сборка №17: «u…» — файл страницы, «l…» — ролик живого фото, «p…» у фото —
+    // картинка JPEG (MediaFiles.swift).
     func resolveFile(_ id: String, done: @escaping (URL?) -> Void) {
         if let file = files[id], FileManager.default.fileExists(atPath: file.path) {
             done(file)
             return
         }
+        if id.hasPrefix("u") {
+            let file = MediaBridge.userId(id).flatMap { MediaBridge.userFile($0) }
+            if let file = file { files[id] = file }
+            done(file)
+            return
+        }
+        if id.hasPrefix("l") {
+            resolveLive(id, done: done)
+            return
+        }
         guard let local = MediaBridge.localIdentifier(from: id),
               let asset = PHAsset.fetchAssets(withLocalIdentifiers: [local], options: nil).firstObject else {
             done(nil)
+            return
+        }
+        if asset.mediaType == .image {
+            resolvePhoto(id, asset, done: done)
             return
         }
         let options = PHVideoRequestOptions()
