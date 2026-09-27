@@ -48,8 +48,6 @@ targets:
         PRODUCT_NAME: ShareExtension
         INFOPLIST_FILE: ShareExtension/Info.plist
         CODE_SIGN_ENTITLEMENTS: ShareExtension/ShareExtension.entitlements
-        # Сборка №20: окно «Поделиться» открывает приложение (ShareViewController.openApp).
-        APPLICATION_EXTENSION_API_ONLY: NO
         TARGETED_DEVICE_FAMILY: "1"
         DEVELOPMENT_TEAM: GR3WB4Z646
         CODE_SIGN_STYLE: Manual

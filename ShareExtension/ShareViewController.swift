@@ -103,13 +103,18 @@ final class ShareViewController: UIViewController {
     // поделиться, выбираю APIKS — и автоматом открывается APIKS»). Своего
     // способа окну «Поделиться» iOS не даёт: приложение находим по цепочке
     // ответчиков и открываем по своей ссылке apiks://share (App/Info.plist).
-    // Для этого у расширения APPLICATION_EXTENSION_API_ONLY = NO (project.yml).
+    // open(_:options:completionHandler:) расширению при сборке запрещён (а
+    // APPLICATION_EXTENSION_API_ONLY = NO Xcode не принимает — сборка 20
+    // упала) — зовём тот же метод по имени селектора.
     private func openApp() -> Bool {
         guard let url = URL(string: "apiks://share") else { return false }
+        let sel = NSSelectorFromString("openURL:options:completionHandler:")
         var r: UIResponder? = self
         while let cur = r {
-            if let app = cur as? UIApplication {
-                app.open(url, options: [:], completionHandler: nil)
+            if let app = cur as? UIApplication, app.responds(to: sel) {
+                typealias Open = @convention(c) (AnyObject, Selector, NSURL, NSDictionary, AnyObject?) -> Void
+                let open = unsafeBitCast(app.method(for: sel), to: Open.self)
+                open(app, sel, url as NSURL, NSDictionary(), nil)
                 return true
             }
             r = cur.next
