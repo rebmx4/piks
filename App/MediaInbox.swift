@@ -1,4 +1,5 @@
 import AVFoundation
+import ImageIO
 
 // Файлы из «Поделиться → APIKS» (сборка №19, ShareExtension). Расширение
 // кладёт их в общую папку группы приложений (Inbox: файл и описание .json).
@@ -54,8 +55,21 @@ extension MediaBridge {
             removeUserFiles(id)
             let dst = userDir.appendingPathComponent(id + "." + ext)
             do { try fm.moveItem(at: entry.file, to: dst) } catch { continue }
-            let asset = AVURLAsset(url: dst, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
             let size = ((try? fm.attributesOfItem(atPath: dst.path))?[.size] as? NSNumber)?.intValue ?? 0
+            // Фото (сборка №20): размер стоя, с учётом поворота снимка.
+            if (entry.meta["kind"] as? String) == "photo" {
+                var w = 0, h = 0
+                if let src = CGImageSourceCreateWithURL(dst as CFURL, nil),
+                   let p = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] {
+                    w = (p[kCGImagePropertyPixelWidth] as? Int) ?? 0
+                    h = (p[kCGImagePropertyPixelHeight] as? Int) ?? 0
+                    if let o = p[kCGImagePropertyOrientation] as? Int, o >= 5 { swap(&w, &h) }
+                }
+                out.append(["id": id, "url": "\(scheme)://file/\(dst.lastPathComponent)", "kind": "photo",
+                            "name": (entry.meta["name"] as? String) ?? "", "bytes": size, "seconds": 0, "w": w, "h": h])
+                continue
+            }
+            let asset = AVURLAsset(url: dst, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
             var item: [String: Any] = [
                 "id": id, "url": "\(scheme)://file/\(dst.lastPathComponent)",
                 "kind": (entry.meta["kind"] as? String) ?? "video", "name": (entry.meta["name"] as? String) ?? "",

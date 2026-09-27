@@ -64,6 +64,7 @@ final class ShareViewController: UIViewController {
             let type: String
             if p.hasItemConformingToTypeIdentifier("public.movie") { type = "public.movie" }
             else if p.hasItemConformingToTypeIdentifier("public.audio") { type = "public.audio" }
+            else if p.hasItemConformingToTypeIdentifier("public.image") { type = "public.image" }     // №20
             else { continue }
             group.enter()
             // Временный файл живёт только внутри обработчика — копируем сразу.
@@ -71,13 +72,13 @@ final class ShareViewController: UIViewController {
             p.loadFileRepresentation(forTypeIdentifier: type) { url, _ in
                 defer { group.leave() }
                 guard let url = url else { return }
-                let video = type == "public.movie"
-                let ext = url.pathExtension.isEmpty ? (video ? "mov" : "m4a") : url.pathExtension.lowercased()
+                let video = type == "public.movie", photo = type == "public.image"
+                let ext = url.pathExtension.isEmpty ? (video ? "mov" : photo ? "jpg" : "m4a") : url.pathExtension.lowercased()
                 let id = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
                 let dst = inbox.appendingPathComponent(id + "." + ext)
                 do {
                     try FileManager.default.copyItem(at: url, to: dst)
-                    let meta: [String: Any] = ["kind": video ? "video" : "audio", "name": url.lastPathComponent,
+                    let meta: [String: Any] = ["kind": video ? "video" : photo ? "photo" : "audio", "name": url.lastPathComponent,
                                                "file": dst.lastPathComponent, "at": stamp, "n": n]
                     let data = try JSONSerialization.data(withJSONObject: meta)
                     try data.write(to: inbox.appendingPathComponent(id + ".json"))    // описание — последним
@@ -89,7 +90,7 @@ final class ShareViewController: UIViewController {
         }
         group.notify(queue: .main) {
             if saved == 0 {
-                self.finish("Здесь нет видео или звука", ok: false)
+                self.finish("Здесь нет видео, звука или фото", ok: false)
             } else if self.openApp() {
                 self.finish("Добавлено в APIKS", ok: true, quick: true)
             } else {

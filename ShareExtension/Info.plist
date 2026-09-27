@@ -28,9 +28,9 @@
 		<string>$(PRODUCT_MODULE_NAME).ShareViewController</string>
 		<key>NSExtensionAttributes</key>
 		<dict>
-			<!-- Видео и звук, до 20 файлов за раз: «Фото», «Файлы», мессенджеры. -->
+			<!-- Видео, звук и фото (сборка №20), до 20 файлов за раз: «Фото», «Файлы», мессенджеры. -->
 			<key>NSExtensionActivationRule</key>
-			<string>SUBQUERY (extensionItems, $extensionItem, SUBQUERY ($extensionItem.attachments, $attachment, ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.movie" || ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.audio").@count &gt;= 1 AND SUBQUERY ($extensionItem.attachments, $attachment, ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.movie" || ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.audio").@count &lt;= 20).@count &gt;= 1</string>
+			<string>SUBQUERY (extensionItems, $extensionItem, SUBQUERY ($extensionItem.attachments, $attachment, ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.movie" || ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.audio" || ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.image").@count &gt;= 1 AND SUBQUERY ($extensionItem.attachments, $attachment, ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.movie" || ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.audio" || ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.image").@count &lt;= 20).@count &gt;= 1</string>
 		</dict>
 	</dict>
 </dict>
