@@ -66,6 +66,16 @@ extension MediaBridge: WKURLSchemeHandler {
             return
         }
 
+        // ryndi-media://preview/<id>.mp4 — лёгкая копия ролика для просмотра (сборка №18, MediaPreview.swift).
+        if url.host == "preview" {
+            guard let file = PreviewCopies.ready(id) else {
+                respond(task, key: key, status: 404, headers: [:], body: Data())
+                return
+            }
+            serve(task, key: key, fileURL: file, rangeHeader: rangeHeader, type: "video/mp4")
+            return
+        }
+
         // ryndi-media://audio/<id>.m4a — звук ролика отдельным файлом (MediaAudio.swift).
         if url.host == "audio" {
             guard let file = audioFiles[id] else {

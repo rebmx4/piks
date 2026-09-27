@@ -36,6 +36,7 @@ final class MediaBridge: NSObject {
     private var progressTimer: Timer?
     private var exporter: NativeExporter?           // идущий нативный экспорт
     private var lastExport: URL?                    // последний готовый файл — для «Поделиться»
+    let previews = PreviewCopies()                  // копии роликов для просмотра (сборка №18, MediaPreview.swift)
 
     // Что умеет эта сборка. Страница читает это до загрузки своих модулей
     // и решает, звать ли нативный экспорт. Старая сборка этого не пишет —
@@ -52,15 +53,17 @@ final class MediaBridge: NSObject {
     // Image по имени, stills — фото в экспорте, files — файлы от страницы,
     // photo и live — фото и живые фото из галереи, haptic — вибрация, mic —
     // микрофон (запись голоса; audio-session — режим звука), vision — разбор
-    // «человек/фон» средствами iOS.
+    // «человек/фон» средствами iOS. Сборка №18: preview — лёгкая копия ролика
+    // 1080p для просмотра (MediaPreview.swift).
     static var capsScript: String {
         let build = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? ""
-        return "window.__ryndiApp = { version: 3, build: '\(build)', caps: ['pick', 'export', 'photos', 'share', 'site', 'wave', 'audio', 'ramps', 'read', 'adjust', 'gallery', 'speed', 'crop', 'mask', 'overlap', 'cifilter', 'stills', 'files', 'photo', 'live', 'haptic', 'mic', 'vision'] };"
+        return "window.__ryndiApp = { version: 3, build: '\(build)', caps: ['pick', 'export', 'photos', 'share', 'site', 'wave', 'audio', 'ramps', 'read', 'adjust', 'gallery', 'speed', 'crop', 'mask', 'overlap', 'cifilter', 'stills', 'files', 'photo', 'live', 'haptic', 'mic', 'vision', 'preview'] };"
     }
 
     init(host: UIViewController) {
         self.host = host
         super.init()
+        previews.bridge = self
     }
 
     func attach(_ webView: WKWebView) { self.webView = webView }
@@ -71,6 +74,9 @@ final class MediaBridge: NSObject {
     func rememberFile(_ id: String, _ url: URL) { files[id] = url }
     func forgetFile(_ id: String) { files[id] = nil }
     func markStopped(_ key: ObjectIdentifier) { stopped.insert(key) }
+    // Идёт экспорт телефоном — копии для просмотра ждут (MediaPreview.swift):
+    // кодировщик у них общий.
+    var exportRunning: Bool { exporter != nil || export != nil }
     func unmarkStopped(_ key: ObjectIdentifier) { stopped.remove(key) }
     func isStopped(_ key: ObjectIdentifier) -> Bool { stopped.contains(key) }
 
@@ -97,6 +103,8 @@ final class MediaBridge: NSObject {
         case "audio-session": MediaBridge.audioSession(body["mode"] as? String)
         case "vision-person": visionPerson(body)
         case "vision-cancel": visionCancel(body)
+        case "preview":        previews.request(body["id"] as? String, force: (body["force"] as? Bool) ?? false)
+        case "preview-cancel": previews.cancel(body["id"] as? String)
         default:              break
         }
     }
@@ -129,8 +137,10 @@ final class MediaBridge: NSObject {
             }
             self.exporter = nil
             UIApplication.shared.isIdleTimerDisabled = false
+            self.previews.resume()
         }
         exporter = ex
+        previews.pause()                 // копия для просмотра уступает кодировщик (MediaPreview.swift)
         // Пока идёт экспорт, экран не гаснет: в фоне телефон не даёт считать
         // на видеокарте, и сборка оборвалась бы.
         UIApplication.shared.isIdleTimerDisabled = true
@@ -366,6 +376,7 @@ final class MediaBridge: NSObject {
                     self.fail(session.error?.localizedDescription ?? "пересжатие не удалось")
                 }
                 self.export = nil
+                self.previews.resume()
             }
         }
     }
