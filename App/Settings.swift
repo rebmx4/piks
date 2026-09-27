@@ -22,7 +22,20 @@ var isTestFlight: Bool {
     return Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt"
 }
 
+// Выбирать версию сайта можно только в TestFlight (ею проверяет владелец) и
+// в отладочной сборке. В сборке из App Store скрытый переключатель — это
+// «скрытая функция» (правило 2.3.1 проверки Apple): там всегда рабочая
+// версия /ryn/, меню трёх пальцев и «Тестовая версия» в профиле не видны.
+var canChooseSite: Bool {
+#if DEBUG
+    return true
+#else
+    return isTestFlight
+#endif
+}
+
 var rootUrl: URL {
+    guard canChooseSite else { return stableUrl }
     switch UserDefaults.standard.string(forKey: siteKey) {
     case "next": return nextUrl
     case "stable": return stableUrl

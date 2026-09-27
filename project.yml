@@ -29,3 +29,26 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         DEVELOPMENT_TEAM: GR3WB4Z646
         CODE_SIGN_STYLE: Manual
+        # Сборка №19: общая папка с «Поделиться → APIKS» (группа приложений).
+        CODE_SIGN_ENTITLEMENTS: App/App.entitlements
+    dependencies:
+      - target: ShareExtension
+        embed: true
+
+  # «Поделиться → APIKS» (сборка №19): видео и звук из «Фото», «Файлов»,
+  # мессенджеров — в общую папку, приложение забирает их (MediaInbox.swift).
+  ShareExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: ShareExtension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.piks.app.share
+        PRODUCT_NAME: ShareExtension
+        INFOPLIST_FILE: ShareExtension/Info.plist
+        CODE_SIGN_ENTITLEMENTS: ShareExtension/ShareExtension.entitlements
+        TARGETED_DEVICE_FAMILY: "1"
+        DEVELOPMENT_TEAM: GR3WB4Z646
+        CODE_SIGN_STYLE: Manual
+        SKIP_INSTALL: YES

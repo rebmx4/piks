@@ -54,10 +54,18 @@ final class MediaBridge: NSObject {
     // photo и live — фото и живые фото из галереи, haptic — вибрация, mic —
     // микрофон (запись голоса; audio-session — режим звука), vision — разбор
     // «человек/фон» средствами iOS. Сборка №18: preview — лёгкая копия ролика
-    // 1080p для просмотра (MediaPreview.swift).
+    // 1080p для просмотра (MediaPreview.swift). Сборка №19: stereo — звук
+    // экспорта в оба уха и громче 100 % (ExportAudio.swift); inbox — файлы
+    // из «Поделиться → APIKS» (MediaInbox.swift); site — выбор
+    // версии сайта — только в TestFlight (canChooseSite, Settings.swift).
     static var capsScript: String {
         let build = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? ""
-        return "window.__ryndiApp = { version: 3, build: '\(build)', caps: ['pick', 'export', 'photos', 'share', 'site', 'wave', 'audio', 'ramps', 'read', 'adjust', 'gallery', 'speed', 'crop', 'mask', 'overlap', 'cifilter', 'stills', 'files', 'photo', 'live', 'haptic', 'mic', 'vision', 'preview'] };"
+        var caps = ["pick", "export", "photos", "share", "wave", "audio", "ramps", "read", "adjust", "gallery",
+                    "speed", "crop", "mask", "overlap", "cifilter", "stills", "files", "photo", "live", "haptic",
+                    "mic", "vision", "preview", "stereo", "inbox"]
+        if canChooseSite { caps.insert("site", at: 4) }
+        let list = caps.map { "'" + $0 + "'" }.joined(separator: ", ")
+        return "window.__ryndiApp = { version: 3, build: '\(build)', caps: [\(list)] };"
     }
 
     init(host: UIViewController) {
@@ -105,6 +113,7 @@ final class MediaBridge: NSObject {
         case "vision-cancel": visionCancel(body)
         case "preview":        previews.request(body["id"] as? String, force: (body["force"] as? Bool) ?? false)
         case "preview-cancel": previews.cancel(body["id"] as? String)
+        case "inbox":          takeInbox(body)
         default:              break
         }
     }

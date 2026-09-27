@@ -92,6 +92,9 @@ struct ExportPlan {
         // Точки громкости на ленте (секунды выхода): между ними — плавно.
         let keys: [(at: Double, g: Double)]
         let src: Double?            // длина в исходнике (скорость), nil — равна dur
+        // Сборка №19: живой канал ролика, записанного в одно ухо, — в оба
+        // («Стерео — в оба уха» на странице): "L" | "R" | nil.
+        let ear: String?
     }
     struct Overlay {
         let png: Data
@@ -187,7 +190,8 @@ struct ExportPlan {
             }
             allSounds.append(Sound(media: mid, at: at, from: from, dur: dur,
                                    volume: ExportPlan.num(raw["volume"]) ?? 1, keys: keys,
-                                   src: ExportPlan.num(raw["src"]).flatMap { $0 > 0 ? $0 : nil }))
+                                   src: ExportPlan.num(raw["src"]).flatMap { $0 > 0 ? $0 : nil },
+                                   ear: raw["ear"] as? String))
         }
         sounds = allSounds
 
@@ -658,6 +662,7 @@ final class NativeExporter {
     private var ended = false
     private var reader: AVAssetReader?
     private var writer: AVAssetWriter?
+    private var temps: [URL] = []           // стереокопии звука (ExportAudio) — стереть в конце
 
     // Вызывается на главной очереди, когда экспорт закончился (файл или nil).
     var onFinish: ((URL?) -> Void)?
@@ -849,11 +854,40 @@ final class NativeExporter {
             mainTrack.insertEmptyTimeRange(CMTimeRange(start: mainEnd, end: total))
         }
 
+        // Звук (сборка №19, ExportAudio): один канал и «в оба уха» — из
+        // стереокопии; громкость выше 100 % — все громкости делятся на
+        // наибольшую, сведённый звук усиливается на неё в run.
+        let loud = max(1, plan.sounds.map { s in max(s.volume, s.keys.map { $0.g }.max() ?? 0) }.max() ?? 1)
+        let k = 1 / loud
+        var stereo: [String: AVAssetTrack] = [:]
+        func audioSource(_ s: ExportPlan.Sound) -> AVAssetTrack? {
+            guard let a = asset(s.media), let t = a.tracks(withMediaType: .audio).first else { return nil }
+            let ch = ExportAudio.channels(t)
+            let mode = ch == 1 ? "M" : (ch == 2 && (s.ear == "L" || s.ear == "R")) ? (s.ear ?? "") : ""
+            if mode.isEmpty { return t }
+            let key = s.media.filter { $0.isLetter || $0.isNumber } + "-" + mode
+            if let ready = stereo[key] { return ready }
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("ryndi-stereo-\(key).caf")
+            do {
+                try ExportAudio.stereoCopy(a, t, mode: mode, to: url)
+                temps.append(url)
+                let copy = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
+                if let ct = copy.tracks(withMediaType: .audio).first {
+                    stereo[key] = ct
+                    return ct
+                }
+            } catch {
+                NSLog("ryndi: стереокопия звука %@ не вышла: %@", key, error.localizedDescription)
+            }
+            stereo[key] = t                  // не вышло — как раньше, второй раз не пробуем
+            return t
+        }
+
         // Звук: кусок на первую свободную к его началу дорожку.
         var audioTracks: [AVMutableCompositionTrack] = []
         var params: [CMPersistentTrackID: AVMutableAudioMixInputParameters] = [:]
         for s in plan.sounds {
-            guard let a = asset(s.media), let src = a.tracks(withMediaType: .audio).first else { continue }
+            guard let src = audioSource(s) else { continue }
             let start = time(s.at)
             var chosen: AVMutableCompositionTrack? = nil
             for t in audioTracks where CMTimeCompare(ends[t.trackID] ?? CMTime.zero, start) <= 0 {
@@ -883,17 +917,17 @@ final class NativeExporter {
                 var cursor = s.at
                 // Уровень в начале — отдельно, только если первый переход
                 // начинается позже: пересекаться с ним не должен.
-                if s.keys[0].at > s.at + 0.001 { p.setVolume(Float(gain(cursor)), at: start) }
+                if s.keys[0].at > s.at + 0.001 { p.setVolume(Float(gain(cursor) * k), at: start) }
                 for i in 0..<(s.keys.count - 1) {
                     let from = max(s.keys[i].at, cursor), to = min(s.keys[i + 1].at, end)
                     if to - from < 0.001 { continue }
-                    p.setVolumeRamp(fromStartVolume: Float(gain(from)), toEndVolume: Float(gain(to)),
+                    p.setVolumeRamp(fromStartVolume: Float(gain(from) * k), toEndVolume: Float(gain(to) * k),
                                     timeRange: CMTimeRange(start: time(from), end: time(to)))
                     cursor = to
                 }
-                if cursor < end - 0.001 { p.setVolume(Float(gain(cursor)), at: time(cursor)) }
+                if cursor < end - 0.001 { p.setVolume(Float(gain(cursor) * k), at: time(cursor)) }
             } else {
-                p.setVolume(Float(s.volume), at: start)
+                p.setVolume(Float(s.volume * k), at: start)
             }
             params[track.trackID] = p
         }
@@ -928,7 +962,7 @@ final class NativeExporter {
         vc.instructions = [RyndiInstruction(timeRange: CMTimeRange(start: CMTime.zero, duration: span),
                                             trackIDs: videoIDs, scene: scene)]
 
-        try run(comp, vc, mix, total)
+        try run(comp, vc, mix, total, loud: Float(loud))
     }
 
     private func videoSettings(_ codec: AVVideoCodecType) -> [String: Any] {
@@ -949,7 +983,8 @@ final class NativeExporter {
         ]
     }
 
-    private func run(_ comp: AVComposition, _ vc: AVVideoComposition, _ mix: AVAudioMix, _ total: CMTime) throws {
+    private func run(_ comp: AVComposition, _ vc: AVVideoComposition, _ mix: AVAudioMix, _ total: CMTime,
+                     loud: Float = 1) throws {
         let safeJob = String(job.filter { $0.isLetter || $0.isNumber }.prefix(32))
         let out = FileManager.default.temporaryDirectory.appendingPathComponent("ryndi-export-\(safeJob).mp4")
         try? FileManager.default.removeItem(at: out)
@@ -1002,7 +1037,9 @@ final class NativeExporter {
             ]
             let input = AVAssetWriterInput(mediaType: .audio, outputSettings: aac)
             input.expectsMediaDataInRealTime = false
-            let output = AVAssetReaderAudioMixOutput(audioTracks: audioTracks, audioSettings: pcm)
+            // Громче 100 % — сведённое читается в Float32 и усиливается в pump.
+            let output = AVAssetReaderAudioMixOutput(audioTracks: audioTracks,
+                                                     audioSettings: loud > 1.0001 ? ExportAudio.floatPCM(channels: 2) : pcm)
             output.audioMix = mix
             // Ускоренный и замедленный звук — без смены тона (голос не «мультяшный»).
             output.audioTimePitchAlgorithm = .spectral
@@ -1031,7 +1068,8 @@ final class NativeExporter {
         let seconds = max(CMTimeGetSeconds(total), 0.001)
         pump(videoIn, videoOut, videoQueue, group, progressOf: seconds)
         if let input = audioIn, let output = audioOut {
-            pump(input, output, audioQueue, group, progressOf: nil)
+            pump(input, output, audioQueue, group, progressOf: nil,
+                 transform: loud > 1.0001 ? { (s: CMSampleBuffer) -> CMSampleBuffer? in ExportAudio.amplified(s, by: loud) } : nil)
         }
         let hasAudio = audioIn != nil
         group.notify(queue: work) {
@@ -1040,7 +1078,8 @@ final class NativeExporter {
     }
 
     private func pump(_ input: AVAssetWriterInput, _ output: AVAssetReaderOutput, _ queue: DispatchQueue,
-                      _ group: DispatchGroup, progressOf seconds: Double?) {
+                      _ group: DispatchGroup, progressOf seconds: Double?,
+                      transform: ((CMSampleBuffer) -> CMSampleBuffer?)? = nil) {
         group.enter()
         var finished = false
         input.requestMediaDataWhenReady(on: queue) {
@@ -1061,7 +1100,7 @@ final class NativeExporter {
                     let t = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))
                     self.progress(t / seconds)
                 }
-                if !input.append(sample) {
+                if !input.append(transform?(sample) ?? sample) {
                     finished = true
                     input.markAsFinished()
                     group.leave()
@@ -1128,6 +1167,8 @@ final class NativeExporter {
     }
 
     private func end(_ event: [String: Any], file: URL?) {
+        for url in temps { try? FileManager.default.removeItem(at: url) }
+        temps = []
         DispatchQueue.main.async {
             if self.ended { return }
             self.ended = true

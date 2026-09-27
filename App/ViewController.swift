@@ -109,13 +109,16 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
         }
         webView.addObserver(self, forKeyPath: #keyPath(WKWebView.estimatedProgress), options: .new, context: nil)
 
-        // Три пальца, долгое нажатие — меню версии (см. chooseSite).
-        let siteGesture = UILongPressGestureRecognizer(target: self, action: #selector(chooseSite(_:)))
-        siteGesture.numberOfTouchesRequired = 3
-        siteGesture.minimumPressDuration = 1.0
-        siteGesture.cancelsTouchesInView = false
-        siteGesture.delegate = self
-        webView.addGestureRecognizer(siteGesture)
+        // Три пальца, долгое нажатие — меню версии (см. chooseSite). Только
+        // там, где версию можно выбирать (canChooseSite: TestFlight, отладка).
+        if canChooseSite {
+            let siteGesture = UILongPressGestureRecognizer(target: self, action: #selector(chooseSite(_:)))
+            siteGesture.numberOfTouchesRequired = 3
+            siteGesture.minimumPressDuration = 1.0
+            siteGesture.cancelsTouchesInView = false
+            siteGesture.delegate = self
+            webView.addGestureRecognizer(siteGesture)
+        }
     }
 
     private func setupProgress() {
@@ -174,6 +177,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
 
     // Переключили сайт (тестовая / рабочая версия) — запоминаем и открываем.
     func switchSite(_ value: String) {
+        guard canChooseSite else { return }
         UserDefaults.standard.set(value == "next" ? "next" : "stable", forKey: siteKey)
         loadRoot()
     }

@@ -48,6 +48,13 @@ workflows:
             --certificate-key=@file:/tmp/cert_key.pem \
             --create \
             --verbose
+          # Сборка №19: «Поделиться → APIKS» — своё расширение со своим профилем
+          # (группа приложений group.com.piks.app — у обоих в кабинете Apple).
+          app-store-connect fetch-signing-files "$BUNDLE_ID.share" \
+            --type IOS_APP_STORE \
+            --certificate-key=@file:/tmp/cert_key.pem \
+            --create \
+            --verbose
           keychain add-certificates
           echo "===== Applying profiles to project ====="
           xcode-project use-profiles --verbose
