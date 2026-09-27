@@ -4,8 +4,8 @@ import UIKit
 // «Поделиться» предлагали моё приложение»). Ролик или звук из «Фото»,
 // «Файлов», мессенджеров копируется в общую папку группы приложений
 // (group.com.piks.app, папка Inbox): файл и рядом описание <номер>.json.
-// Само приложение iOS из окна «Поделиться» открыть не даёт. Открыли APIKS —
-// страница забирает файлы (App/MediaInbox.swift): звук встаёт у полосы
+// Затем окно само открывает APIKS (openApp, сборка №20), и страница
+// забирает файлы (App/MediaInbox.swift): звук встаёт у полосы
 // открытого проекта, видео — в конец ленты; без проекта видео открывает
 // новый проект, а звук ждёт, пока проект откроют.
 final class ShareViewController: UIViewController {
@@ -88,19 +88,39 @@ final class ShareViewController: UIViewController {
             }
         }
         group.notify(queue: .main) {
-            if saved > 0 {
-                self.finish("Добавлено в APIKS — откройте приложение", ok: true)
-            } else {
+            if saved == 0 {
                 self.finish("Здесь нет видео или звука", ok: false)
+            } else if self.openApp() {
+                self.finish("Добавлено в APIKS", ok: true, quick: true)
+            } else {
+                self.finish("Добавлено в APIKS — откройте приложение", ok: true)
             }
         }
     }
 
-    private func finish(_ text: String, ok: Bool) {
+    // Сразу открыть APIKS (сборка №20, владелец 27.09.2026: «нажимаю
+    // поделиться, выбираю APIKS — и автоматом открывается APIKS»). Своего
+    // способа окну «Поделиться» iOS не даёт: приложение находим по цепочке
+    // ответчиков и открываем по своей ссылке apiks://share (App/Info.plist).
+    // Для этого у расширения APPLICATION_EXTENSION_API_ONLY = NO (project.yml).
+    private func openApp() -> Bool {
+        guard let url = URL(string: "apiks://share") else { return false }
+        var r: UIResponder? = self
+        while let cur = r {
+            if let app = cur as? UIApplication {
+                app.open(url, options: [:], completionHandler: nil)
+                return true
+            }
+            r = cur.next
+        }
+        return false
+    }
+
+    private func finish(_ text: String, ok: Bool, quick: Bool = false) {
         spinner.stopAnimating()
         spinner.isHidden = true
         label.text = text
-        DispatchQueue.main.asyncAfter(deadline: .now() + (ok ? 1.4 : 2.2)) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + (quick ? 0.4 : ok ? 1.4 : 2.2)) {
             self.extensionContext?.completeRequest(returningItems: nil, completionHandler: nil)
         }
     }

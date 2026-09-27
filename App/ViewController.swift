@@ -175,6 +175,12 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
         webView.load(req)
     }
 
+    // «Поделиться → APIKS» открыло приложение (сборка №20): страница забирает
+    // файлы по событию видимости — то же, что при возврате в приложение.
+    func nudgeInbox() {
+        webView?.evaluateJavaScript("document.dispatchEvent(new Event('visibilitychange'))", completionHandler: nil)
+    }
+
     // Переключили сайт (тестовая / рабочая версия) — запоминаем и открываем.
     func switchSite(_ value: String) {
         guard canChooseSite else { return }

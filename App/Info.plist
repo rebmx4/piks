@@ -30,6 +30,18 @@
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Разрешение нужно, чтобы сохранить готовый ролик в вашу галерею.</string>
 
+	<!-- Сборка №20: apiks://share — «Поделиться → APIKS» открывает приложение. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.piks.app</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>apiks</string>
+			</array>
+		</dict>
+	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>LSApplicationCategoryType</key>
