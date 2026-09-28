@@ -231,7 +231,7 @@ extension MediaBridge {
                 ? MediaBridge.shrink(mask, to: w, h) : MediaBridge.shrinkFloat(mask, to: w, h)
             guard let bytes = shrunk else { throw ExportError("маска не читается (формат \(format))") }
             send(["event": "vision-subject", "req": req,
-                  "frames": [["i": 0, "t": 0, "w": w, "h": h, "rle": Data(MediaBridge.rle(bytes)).base64EncodedString()]],
+                  "frames": [["i": 0, "t": 0, "w": w, "h": h, "rle": Data(MediaBridge.rle(bytes)).base64EncodedString()] as [String: Any]],
                   "done": true, "count": 1, "instances": found.allInstances.count, "ms": ms()])
         } catch {
             send(["event": "vision-error", "req": req, "reason": error.localizedDescription])
