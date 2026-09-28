@@ -29,6 +29,11 @@ final class PreviewCopies {
     weak var bridge: MediaBridge?
 
     private var queue: [String] = []
+    // Фоновая очередь (сборка №22): копии для копий проектов (MediaKeep.swift)
+    // — только когда очередь страницы пуста; страница попросила тот же
+    // ролик — он переходит в её очередь.
+    private var low: [String] = []
+    private var lowIds = Set<String>()                 // что сейчас делается для фона
     private var forced = Set<String>()                 // сделать заново, даже если копия есть
     private var resolving: String?                     // ищем файл ролика (current ещё нет)
     private var current: (id: String, session: AVAssetExportSession, timer: Timer, part: URL)?
@@ -37,6 +42,26 @@ final class PreviewCopies {
     private var retries: [String: Int] = [:]           // сколько раз копию прерывала система
 
     private static let limit: Int64 = 3 * 1024 * 1024 * 1024
+
+    // Идёт копия или ждёт очереди по просьбе страницы — кэш не чистим
+    // (MediaKeep.swift). Фоновая работа не в счёт: её отменяет stopBackground.
+    var busy: Bool {
+        if !queue.isEmpty { return true }
+        if let cur = current, !lowIds.contains(cur.id) { return true }
+        if let r = resolving, !lowIds.contains(r) { return true }
+        return false
+    }
+
+    // Очистка кэша: фоновые копии — отменить (копия проекта попросит снова).
+    func stopBackground() {
+        let pending = low
+        low.removeAll()
+        for id in pending { lowIds.remove(id); fail(id, "отменено очисткой кэша") }
+        if let cur = current, lowIds.contains(cur.id), !cancelling {
+            cancelling = true
+            cur.session.cancelExport()
+        }
+    }
 
     init() {
         NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification,
@@ -64,7 +89,7 @@ final class PreviewCopies {
         return FileManager.default.fileExists(atPath: f.path) ? f : nil
     }
 
-    func request(_ id: String?, force: Bool) {
+    func request(_ id: String?, force: Bool, background: Bool = false) {
         guard let id = id, !PreviewCopies.safe(id).isEmpty else { return }
         used.insert(id)
         if !force, let f = PreviewCopies.ready(id) {
@@ -73,6 +98,17 @@ final class PreviewCopies {
             sendReady(id, f, took: 0)
             return
         }
+        if background {
+            if resolving == id || queue.contains(id) || low.contains(id) { return }
+            if let cur = current, cur.id == id, !cancelling { return }
+            low.append(id)
+            lowIds.insert(id)
+            next()
+            return
+        }
+        // Страница просит — из фона в её очередь (или уже делается — пусть).
+        lowIds.remove(id)
+        low.removeAll { $0 == id }
         if resolving == id || queue.contains(id) { return }
         if let cur = current, cur.id == id, !cancelling { return }
         if force { forced.insert(id) }
@@ -85,6 +121,11 @@ final class PreviewCopies {
         guard let id = id else { return }
         forced.remove(id)
         retries[id] = nil
+        if low.contains(id) {
+            low.removeAll { $0 == id }
+            lowIds.remove(id)
+            fail(id, "отменено")
+        }
         if queue.contains(id) {
             queue.removeAll { $0 == id }
             fail(id, "отменено")
@@ -105,16 +146,22 @@ final class PreviewCopies {
     // встаёт в начало очереди; кончился — очередь идёт дальше (MediaBridge).
     func pause() {
         guard let cur = current, !cancelling else { return }
-        queue.insert(cur.id, at: 0)          // ветка .cancelled увидит id в очереди — без «отменено»
+        requeue(cur.id)                      // ветка .cancelled увидит id в очереди — без «отменено»
         cancelling = true
         cur.session.cancelExport()
     }
     func resume() { next() }
 
+    // Снова в начало своей очереди: фоновая работа — в фоновую.
+    private func requeue(_ id: String) {
+        if lowIds.contains(id) { low.insert(id, at: 0) } else { queue.insert(id, at: 0) }
+    }
+    private func waiting(_ id: String) -> Bool { queue.contains(id) || low.contains(id) }
+
     private func next() {
-        guard current == nil, resolving == nil, !queue.isEmpty, let bridge = bridge,
+        guard current == nil, resolving == nil, !queue.isEmpty || !low.isEmpty, let bridge = bridge,
               !bridge.exportRunning, UIApplication.shared.applicationState == .active else { return }
-        let id = queue.removeFirst()
+        let id = !queue.isEmpty ? queue.removeFirst() : low.removeFirst()
         resolving = id
         if forced.contains(id) { bridge.forgetFile(id) }    // обрезали в «Фото» — файл мог смениться
         bridge.resolveFile(id) { [weak self] url in
@@ -131,7 +178,7 @@ final class PreviewCopies {
                 return
             }
             if self.bridge?.exportRunning ?? true || UIApplication.shared.applicationState != .active {
-                self.queue.insert(id, at: 0)                  // resume() / didBecomeActive запустят снова
+                self.requeue(id)                              // resume() / didBecomeActive запустят снова
                 return
             }
             self.forced.remove(id)
@@ -171,6 +218,7 @@ final class PreviewCopies {
                 switch session.status {
                 case .completed:
                     self.queue.removeAll { $0 == id }
+                    self.low.removeAll { $0 == id }
                     self.forced.remove(id)
                     self.retries[id] = nil
                     let dest = PreviewCopies.file(id)
@@ -203,16 +251,16 @@ final class PreviewCopies {
                         }
                         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.next() }
                     }
-                    self.queue.insert(id, at: 0)
+                    self.requeue(id)
                     return
                 case .cancelled:
                     try? FileManager.default.removeItem(at: part)
                     // Отменили и тут же попросили снова — просьба уже в очереди.
-                    if !self.queue.contains(id) { self.fail(id, "отменено") }
+                    if !self.waiting(id) { self.fail(id, "отменено") }
                 default:
                     try? FileManager.default.removeItem(at: part)
                     // Уступила экспорту (pause) — id уже в очереди, это не ошибка.
-                    if !(wasCancelled && self.queue.contains(id)) {
+                    if !(wasCancelled && self.waiting(id)) {
                         self.fail(id, session.error?.localizedDescription ?? "копия не вышла")
                     }
                 }
@@ -222,6 +270,9 @@ final class PreviewCopies {
     }
 
     private func sendReady(_ id: String, _ file: URL, took: Double) {
+        lowIds.remove(id)
+        // Копию ждала копия проекта (сборка №22, MediaKeep.swift).
+        bridge?.keepFromPreview(id, file: file, reason: "")
         let attrs = try? FileManager.default.attributesOfItem(atPath: file.path)
         let bytes = (attrs?[.size] as? NSNumber)?.intValue ?? 0
         let seconds = CMTimeGetSeconds(AVURLAsset(url: file).duration)
@@ -234,6 +285,8 @@ final class PreviewCopies {
     }
 
     private func fail(_ id: String, _ reason: String) {
+        lowIds.remove(id)
+        bridge?.keepFromPreview(id, file: nil, reason: reason)
         bridge?.send(["event": "preview-error", "id": id, "reason": reason])
     }
 

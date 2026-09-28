@@ -60,11 +60,14 @@ final class MediaBridge: NSObject {
     // версии сайта — только в TestFlight (canChooseSite, Settings.swift).
     // Сборка №21: subject — «Выделить объект» на фото (MediaVision.swift,
     // только iOS 17+: у телефонов старше страница вырезает людей сама).
+    // Сборка №22: keep — копии роликов проектов (ролик удалили из галереи —
+    // проект открывается с копии), cache — размер и очистка кэша
+    // (MediaKeep.swift).
     static var capsScript: String {
         let build = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? ""
         var caps = ["pick", "export", "photos", "share", "wave", "audio", "ramps", "read", "adjust", "gallery",
                     "speed", "crop", "mask", "overlap", "cifilter", "stills", "files", "photo", "live", "haptic",
-                    "mic", "vision", "preview", "stereo", "inbox"]
+                    "mic", "vision", "preview", "stereo", "inbox", "keep", "cache"]
         if canChooseSite { caps.insert("site", at: 4) }
         if #available(iOS 17.0, *) { caps.append("subject") }
         let list = caps.map { "'" + $0 + "'" }.joined(separator: ", ")
@@ -118,6 +121,9 @@ final class MediaBridge: NSObject {
         case "preview":        previews.request(body["id"] as? String, force: (body["force"] as? Bool) ?? false)
         case "preview-cancel": previews.cancel(body["id"] as? String)
         case "inbox":          takeInbox(body)
+        case "keep":           keep(body["id"] as? String)
+        case "keep-drop":      keepDrop((body["ids"] as? [String]) ?? [])
+        case "cache":          cacheCommand(body)
         default:              break
         }
     }
@@ -221,17 +227,19 @@ final class MediaBridge: NSObject {
             done(file)
             return
         }
+        // Сборка №22: оригинала в галерее нет (удалили, только в iCloud без
+        // сети) — копия проекта (MediaKeep.swift).
         if id.hasPrefix("l") {
-            resolveLive(id, done: done)
+            resolveLive(id) { [weak self] url in done(url ?? self?.keptFallback(id)) }
             return
         }
         guard let local = MediaBridge.localIdentifier(from: id),
               let asset = PHAsset.fetchAssets(withLocalIdentifiers: [local], options: nil).firstObject else {
-            done(nil)
+            done(keptFallback(id))
             return
         }
         if asset.mediaType == .image {
-            resolvePhoto(id, asset, done: done)
+            resolvePhoto(id, asset) { [weak self] url in done(url ?? self?.keptFallback(id)) }
             return
         }
         let options = PHVideoRequestOptions()
@@ -242,7 +250,7 @@ final class MediaBridge: NSObject {
             let url = (avAsset as? AVURLAsset)?.url
             DispatchQueue.main.async {
                 guard let url = url, FileManager.default.isReadableFile(atPath: url.path) else {
-                    done(nil)
+                    done(self?.keptFallback(id))
                     return
                 }
                 self?.files[id] = url
