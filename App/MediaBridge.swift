@@ -58,12 +58,15 @@ final class MediaBridge: NSObject {
     // экспорта в оба уха и громче 100 % (ExportAudio.swift); inbox — файлы
     // из «Поделиться → APIKS» (MediaInbox.swift); site — выбор
     // версии сайта — только в TestFlight (canChooseSite, Settings.swift).
+    // Сборка №21: subject — «Выделить объект» на фото (MediaVision.swift,
+    // только iOS 17+: у телефонов старше страница вырезает людей сама).
     static var capsScript: String {
         let build = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? ""
         var caps = ["pick", "export", "photos", "share", "wave", "audio", "ramps", "read", "adjust", "gallery",
                     "speed", "crop", "mask", "overlap", "cifilter", "stills", "files", "photo", "live", "haptic",
                     "mic", "vision", "preview", "stereo", "inbox"]
         if canChooseSite { caps.insert("site", at: 4) }
+        if #available(iOS 17.0, *) { caps.append("subject") }
         let list = caps.map { "'" + $0 + "'" }.joined(separator: ", ")
         return "window.__ryndiApp = { version: 3, build: '\(build)', caps: [\(list)] };"
     }
@@ -110,6 +113,7 @@ final class MediaBridge: NSObject {
         case "haptic":        haptic(body["style"] as? String)
         case "audio-session": MediaBridge.audioSession(body["mode"] as? String)
         case "vision-person": visionPerson(body)
+        case "vision-subject": visionSubject(body)
         case "vision-cancel": visionCancel(body)
         case "preview":        previews.request(body["id"] as? String, force: (body["force"] as? Bool) ?? false)
         case "preview-cancel": previews.cancel(body["id"] as? String)
