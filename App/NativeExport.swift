@@ -320,7 +320,9 @@ final class RenderScene {
                 // Основной слой не пустеет: на стыке кусков или в последнем
                 // кадре держим прошлый кадр, а не вспышку чёрного.
                 if let image = placed { lastMain = image; lastK = k }
-                else if abs(k - lastK) <= 2 { placed = lastMain }
+                // Экспорт идёт по порядку — держим, как раньше (до 2 с); проигрыватель
+                // перемотал назад или далеко — прошлый кадр чужой.
+                else if k >= lastK && k - lastK <= Int(fps * 2) { placed = lastMain }
             }
             if let image = placed { out = image.composited(over: out) }
         }

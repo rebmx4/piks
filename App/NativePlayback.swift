@@ -147,6 +147,7 @@ final class NativePlayback: NSObject {
         endToken = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
             guard let self = self else { return }
+            self.wantPlay = false
             self.stopLink()
             self.send?(["event": "play-ended", "t": self.seconds()])
         }
