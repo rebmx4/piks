@@ -6,6 +6,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
 
     private var webView: WKWebView!
     private var mediaBridge: MediaBridge!
+    private let playback = NativePlayback()          // нативное превью под страницей (сборка №23)
     private var progressView: UIProgressView!
     private var offlineView: UIView!
     private let refreshControl = UIRefreshControl()
@@ -91,7 +92,10 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.scrollView.bounces = true
         webView.isOpaque = false
-        webView.backgroundColor = bgColor
+        // Прозрачный: под страницей — слой нативного превью (NativePlayback);
+        // страница сама красит свой фон, а на время игры открывает окно превью.
+        webView.backgroundColor = .clear
+        webView.scrollView.backgroundColor = .clear
         webView.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1 PiksiOS"
         webView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(webView)
@@ -101,6 +105,18 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
             webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
         ])
+        // Нативное превью — ПОД страницей, ровно по её рамке: прямоугольник
+        // превью страница присылает в своих точках (play-rect).
+        let pv = playback.view
+        pv.translatesAutoresizingMaskIntoConstraints = false
+        view.insertSubview(pv, belowSubview: webView)
+        NSLayoutConstraint.activate([
+            pv.topAnchor.constraint(equalTo: webView.topAnchor),
+            pv.bottomAnchor.constraint(equalTo: webView.bottomAnchor),
+            pv.leadingAnchor.constraint(equalTo: webView.leadingAnchor),
+            pv.trailingAnchor.constraint(equalTo: webView.trailingAnchor),
+        ])
+        mediaBridge.attachPlayback(playback)
 
         if pullToRefresh {
             refreshControl.tintColor = .lightGray

@@ -37,6 +37,7 @@ final class MediaBridge: NSObject {
     private var exporter: NativeExporter?           // идущий нативный экспорт
     private var lastExport: URL?                    // последний готовый файл — для «Поделиться»
     let previews = PreviewCopies()                  // копии роликов для просмотра (сборка №18, MediaPreview.swift)
+    var playback: NativePlayback?                   // нативное превью (сборка №23, NativePlayback.swift)
 
     // Что умеет эта сборка. Страница читает это до загрузки своих модулей
     // и решает, звать ли нативный экспорт. Старая сборка этого не пишет —
@@ -62,12 +63,13 @@ final class MediaBridge: NSObject {
     // только iOS 17+: у телефонов старше страница вырезает людей сама).
     // Сборка №22: keep — копии роликов проектов (ролик удалили из галереи —
     // проект открывается с копии), cache — размер и очистка кэша
-    // (MediaKeep.swift).
+    // (MediaKeep.swift). Сборка №23: play — нативное превью: при игре видео
+    // показывает сам телефон по плану экспорта (NativePlayback.swift).
     static var capsScript: String {
         let build = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? ""
         var caps = ["pick", "export", "photos", "share", "wave", "audio", "ramps", "read", "adjust", "gallery",
                     "speed", "crop", "mask", "overlap", "cifilter", "stills", "files", "photo", "live", "haptic",
-                    "mic", "vision", "preview", "stereo", "inbox", "keep", "cache"]
+                    "mic", "vision", "preview", "stereo", "inbox", "keep", "cache", "play"]
         if canChooseSite { caps.insert("site", at: 4) }
         if #available(iOS 17.0, *) { caps.append("subject") }
         let list = caps.map { "'" + $0 + "'" }.joined(separator: ", ")
@@ -81,6 +83,23 @@ final class MediaBridge: NSObject {
     }
 
     func attach(_ webView: WKWebView) { self.webView = webView }
+
+    // Нативное превью (сборка №23): события — странице, ролики — по адресам моста.
+    func attachPlayback(_ p: NativePlayback) {
+        playback = p
+        p.send = { [weak self] event in self?.send(event) }
+        p.resolve = { [weak self] id, done in
+            guard let self = self else { done(nil); return }
+            self.resolveFile(id, done: done)
+        }
+    }
+
+    // Число из сообщения страницы (JSON: Int или Double).
+    static func number(_ v: Any?) -> Double {
+        if let d = v as? Double { return d }
+        if let n = v as? NSNumber { return n.doubleValue }
+        return 0
+    }
 
     // Доступ для обработчика схемы, который лежит в соседнем файле.
     // В Swift private ограничен файлом, поэтому поля отдаём через методы.
@@ -124,6 +143,15 @@ final class MediaBridge: NSObject {
         case "keep":           keep(body["id"] as? String)
         case "keep-drop":      keepDrop((body["ids"] as? [String]) ?? [])
         case "cache":          cacheCommand(body)
+        case "play-load":      playback?.load(body["plan"] as? String, key: body["key"] as? String)
+        case "play-start":     playback?.start(MediaBridge.number(body["t"]))
+        case "play-pause":     playback?.pause()
+        case "play-seek":      playback?.seek(MediaBridge.number(body["t"]))
+        case "play-hide":      playback?.hide()
+        case "play-stop":      playback?.stop()
+        case "play-rect":
+            playback?.rect(CGRect(x: MediaBridge.number(body["x"]), y: MediaBridge.number(body["y"]),
+                                  width: MediaBridge.number(body["w"]), height: MediaBridge.number(body["h"])))
         default:              break
         }
     }

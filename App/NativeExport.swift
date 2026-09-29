@@ -291,6 +291,7 @@ final class RenderScene {
     let luts: [Data]
     let ci: [ExportPlan.CiStep]         // ко всему кадру, под надписями
     private var lastMain: CIImage?      // основной слой, если кадра на стыке нет
+    private var lastK = -1_000_000       // номер кадра lastMain: после перемотки он чужой
 
     init(size: CGSize, fps: Double, layers: [[Item]], overlays: [Overlay], grade: [Double]?, luts: [Data],
          ci: [ExportPlan.CiStep] = []) {
@@ -318,7 +319,8 @@ final class RenderScene {
             if index == 0 {
                 // Основной слой не пустеет: на стыке кусков или в последнем
                 // кадре держим прошлый кадр, а не вспышку чёрного.
-                if let image = placed { lastMain = image } else { placed = lastMain }
+                if let image = placed { lastMain = image; lastK = k }
+                else if abs(k - lastK) <= 2 { placed = lastMain }
             }
             if let image = placed { out = image.composited(over: out) }
         }
@@ -648,6 +650,28 @@ final class RyndiCompositor: NSObject, AVVideoCompositing {
 
 // MARK: - Экспорт
 
+// Собранная по плану композиция (NativeExporter.assemble): экспорт пишет её
+// в файл, нативное превью (NativePlayback.swift) играет её на экране.
+struct PlanAssembly {
+    let comp: AVMutableComposition
+    let video: AVMutableVideoComposition
+    let mix: AVMutableAudioMix
+    let total: CMTime
+    let loud: Double
+}
+
+// Временные файлы сборки (стереокопии звука): стереть, когда не нужны.
+final class TempFiles {
+    var urls: [URL] = []
+    // Своё имя файлам этой сборки: экспорт и превью (и две сборки превью
+    // подряд) не пишут и не стирают один и тот же файл.
+    let tag = String(UUID().uuidString.prefix(8))
+    func removeAll() {
+        for url in urls { try? FileManager.default.removeItem(at: url) }
+        urls = []
+    }
+}
+
 final class NativeExporter {
     let job: String
     private let plan: ExportPlan
@@ -662,7 +686,7 @@ final class NativeExporter {
     private var ended = false
     private var reader: AVAssetReader?
     private var writer: AVAssetWriter?
-    private var temps: [URL] = []           // стереокопии звука (ExportAudio) — стереть в конце
+    private let temps = TempFiles()         // стереокопии звука (ExportAudio) — стереть в конце
 
     // Вызывается на главной очереди, когда экспорт закончился (файл или nil).
     var onFinish: ((URL?) -> Void)?
@@ -720,7 +744,7 @@ final class NativeExporter {
         group.notify(queue: .main) { done(found) }
     }
 
-    private func time(_ seconds: Double) -> CMTime {
+    private static func time(_ seconds: Double) -> CMTime {
         return CMTime(seconds: seconds, preferredTimescale: NativeExporter.scale)
     }
 
@@ -729,7 +753,7 @@ final class NativeExporter {
     // Скорость (сборка №17): srcDur секунд исходника ложатся на dur секунд
     // ленты — вставляем отрезок исходника и растягиваем его scaleTimeRange.
     // Скорость «почти 1» — без растяжения, ровно как до №17 (расчёт в CMTime).
-    private func place(_ track: AVMutableCompositionTrack, _ src: AVAssetTrack,
+    private static func place(_ track: AVMutableCompositionTrack, _ src: AVAssetTrack,
                        at: Double, from: Double, dur: Double, srcDur: Double? = nil,
                        ends: inout [CMPersistentTrackID: CMTime]) throws {
         var rate = max(0.01, (srcDur ?? dur) / max(dur, 0.000001))   // секунд исходника на секунду ленты
@@ -760,6 +784,15 @@ final class NativeExporter {
     }
 
     private func build(_ files: [String: URL]) throws {
+        let a = try NativeExporter.assemble(plan, files, temps: temps)
+        try run(a.comp, a.video, a.mix, a.total, loud: Float(a.loud))
+    }
+
+    // Сборка композиции по плану — общая для экспорта и нативного превью
+    // (сборка №23, NativePlayback.swift): дорожки видео, сцена слоёв для
+    // RyndiCompositor, звук со своей громкостью. Стереокопии звука — в temps
+    // (стереть, когда композиция больше не нужна).
+    static func assemble(_ plan: ExportPlan, _ files: [String: URL], temps: TempFiles) throws -> PlanAssembly {
         for id in plan.media.keys where files[id] == nil {
             throw ExportError("ролик не найден в галерее — откройте его заново")
         }
@@ -867,10 +900,10 @@ final class NativeExporter {
             if mode.isEmpty { return t }
             let key = s.media.filter { $0.isLetter || $0.isNumber } + "-" + mode
             if let ready = stereo[key] { return ready }
-            let url = FileManager.default.temporaryDirectory.appendingPathComponent("ryndi-stereo-\(key).caf")
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("ryndi-stereo-\(key)-\(temps.tag).caf")
             do {
                 try ExportAudio.stereoCopy(a, t, mode: mode, to: url)
-                temps.append(url)
+                temps.urls.append(url)
                 let copy = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
                 if let ct = copy.tracks(withMediaType: .audio).first {
                     stereo[key] = ct
@@ -961,8 +994,7 @@ final class NativeExporter {
         let span = CMTimeCompare(comp.duration, total) > 0 ? comp.duration : total
         vc.instructions = [RyndiInstruction(timeRange: CMTimeRange(start: CMTime.zero, duration: span),
                                             trackIDs: videoIDs, scene: scene)]
-
-        try run(comp, vc, mix, total, loud: Float(loud))
+        return PlanAssembly(comp: comp, video: vc, mix: mix, total: total, loud: loud)
     }
 
     private func videoSettings(_ codec: AVVideoCodecType) -> [String: Any] {
@@ -1167,8 +1199,7 @@ final class NativeExporter {
     }
 
     private func end(_ event: [String: Any], file: URL?) {
-        for url in temps { try? FileManager.default.removeItem(at: url) }
-        temps = []
+        temps.removeAll()
         DispatchQueue.main.async {
             if self.ended { return }
             self.ended = true
