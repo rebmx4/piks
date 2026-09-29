@@ -56,6 +56,19 @@ final class NativePlayback: NSObject {
         player.actionAtItemEnd = .pause
         // Не ждать «запаса» перед запуском: ролики локальные, запуск — сразу.
         player.automaticallyWaitsToMinimizeStalling = false
+        NotificationCenter.default.addObserver(self, selector: #selector(servicesReset),
+            name: AVAudioSession.mediaServicesWereResetNotification, object: nil)
+    }
+
+    @objc private func servicesReset() {
+        DispatchQueue.main.async {
+            guard self.key != nil || self.loadingKey != nil else { return }
+            self.gen += 1
+            self.loadingKey = nil
+            self.forget()
+            self.player.replaceCurrentItem(with: nil)
+            self.failed("медиаслужба телефона перезапустилась")
+        }
     }
 
     private static func time(_ seconds: Double) -> CMTime {
@@ -93,7 +106,8 @@ final class NativePlayback: NSObject {
                         guard myGen == self.gen else { fresh.removeAll(); return }
                         self.install(a, key: newKey, temps: fresh)
                         self.send?(["event": "play-ready", "key": newKey,
-                                    "took": Date().timeIntervalSince(started)])
+                                    "took": Date().timeIntervalSince(started),
+                                    "light": self.lightUsed, "total": plan.media.count])
                     }
                 } catch {
                     fresh.removeAll()
@@ -107,13 +121,25 @@ final class NativePlayback: NSObject {
         }
     }
 
+    // Ролики превью — ЛЁГКИЕ копии 1080p (MediaPreview.swift), как у превью
+    // страницы: сборка №23 брала оригиналы 4K HEVC (журнал владельца 29.09:
+    // через 1,4 с «Не удается выполнить действие», и следом у страницы «Media
+    // failed to decode» — медиаслужба телефона не выдержала). Матрицы плана
+    // от размера не зависят (кадр приводится к единице), копия — тот же кадр.
+    private var lightUsed = 0
     private func resolveAll(_ plan: ExportPlan, _ done: @escaping ([String: URL]) -> Void) {
         let group = DispatchGroup()
         var found: [String: URL] = [:]
         let lock = NSLock()
+        lightUsed = 0
         for (id, address) in plan.media {
             let name = URL(string: address)?.lastPathComponent ?? ""
             let fileId = (name as NSString).deletingPathExtension
+            if let light = PreviewCopies.ready(fileId) {
+                found[id] = light
+                lightUsed += 1
+                continue
+            }
             group.enter()
             guard let resolve = resolve else { group.leave(); continue }
             resolve(fileId) { file in
