@@ -1,0 +1,25 @@
+[Unit]
+Description=APIKS identity service (no media storage)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=piks-auth
+Group=piks-auth
+WorkingDirectory=/opt/piks-auth/current
+Environment=PIKS_AUTH_CONFIG=/etc/piks-native/config.json
+ExecStart=/opt/piks-auth/current/.venv/bin/gunicorn backend.config:load_application() --bind 127.0.0.1:8816 --workers 1 --threads 4 --timeout 40 --max-requests 2000 --max-requests-jitter 200 --error-logfile -
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/piks-auth
+MemoryMax=384M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target
