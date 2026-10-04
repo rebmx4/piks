@@ -19,4 +19,6 @@
 <key>UIFileSharingEnabled</key><false/>
 <key>LSSupportsOpeningDocumentsInPlace</key><true/>
 <key>ITSAppUsesNonExemptEncryption</key><false/>
+<key>PiksIdentityURL</key><string>https://rynpro.ru/piks-auth/</string>
+<key>CFBundleURLTypes</key><array><dict><key>CFBundleURLSchemes</key><array><string>$(GOOGLE_REVERSED_CLIENT_ID)</string></array></dict></array>
 </dict></plist>

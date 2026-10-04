@@ -9,6 +9,7 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: GR3WB4Z646
+    GOOGLE_REVERSED_CLIENT_ID: ""
 packages:
   PiksCore:
     path: NativeCore

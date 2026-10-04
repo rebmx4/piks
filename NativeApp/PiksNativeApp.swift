@@ -13,35 +13,68 @@ final class LibraryStore: ObservableObject {
     @Published private(set) var projects: [Project] = []
     @Published var error: String?
     @Published var loading = false
-    let repository: ProjectRepository
+    @Published private(set) var repository: ProjectRepository?
+    private let root: URL
+    private var generation = UUID()
     private let io = DispatchQueue(label: "piks.native.library-io", qos: .userInitiated)
-    init(owner: UUID? = nil) {
-        do {
-            let root = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
-                                                   appropriateFor: nil, create: true).appendingPathComponent("Projects", isDirectory: true)
-            repository = try ProjectRepository(root: root, owner: owner)
-        } catch { fatalError("Local storage unavailable: \(error.localizedDescription)") }
-        reload()
+    init(owner: UUID? = nil, root: URL? = nil) {
+        self.root = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Projects", isDirectory: true)
+        selectOwner(owner)
+    }
+    func selectOwner(_ owner: UUID?) {
+        generation = UUID(); let token = generation; let root = root
+        projects = []; repository = nil; loading = true; error = nil
+        io.async { [weak self] in
+            do {
+                let repo = try ProjectRepository(root: root, owner: owner), list = try repo.catalog()
+                DispatchQueue.main.async {
+                    guard let self, self.generation == token else { return }
+                    self.repository = repo; self.projects = list; self.loading = false
+                }
+            } catch { DispatchQueue.main.async {
+                guard let self, self.generation == token else { return }
+                self.error = error.localizedDescription; self.loading = false
+            } }
+        }
+    }
+    func deleteAccountProjects(_ owner: UUID) async throws {
+        let root = root
+        try await Task.detached(priority: .userInitiated) {
+            try ProjectRepository(root: root, owner: owner).deleteAll()
+        }.value
     }
     func reload() {
-        loading = true; let repo = repository
+        guard let repo = repository else { return }
+        loading = true; let token = generation
         io.async { [weak self] in
-            do { let list = try repo.catalog(); DispatchQueue.main.async { self?.projects = list; self?.loading = false } }
-            catch { DispatchQueue.main.async { self?.error = error.localizedDescription; self?.loading = false } }
+            do { let list = try repo.catalog(); DispatchQueue.main.async {
+                guard let self, self.generation == token else { return }
+                self.projects = list; self.loading = false
+            } }
+            catch { DispatchQueue.main.async {
+                guard let self, self.generation == token else { return }
+                self.error = error.localizedDescription; self.loading = false
+            } }
         }
     }
     func create(_ completion: @escaping (Project) -> Void) {
         let p = Project(name: "Новый проект")
-        let repo = repository
+        guard let repo = repository else { return }
+        let token = generation
         io.async { [weak self] in
-            do { try repo.save(p); DispatchQueue.main.async { self?.reload(); completion(p) } }
+            do { try repo.save(p); DispatchQueue.main.async {
+                guard let self, self.generation == token else { return }
+                self.reload(); completion(p)
+            } }
             catch { DispatchQueue.main.async { self?.error = error.localizedDescription } }
         }
     }
     func delete(_ project: Project) {
-        let repo = repository
+        guard let repo = repository else { return }
+        let token = generation
         io.async { [weak self] in
-            do { try repo.delete(project.id); DispatchQueue.main.async { self?.reload() } }
+            do { try repo.delete(project.id); DispatchQueue.main.async { if self?.generation == token { self?.reload() } } }
             catch { DispatchQueue.main.async { self?.error = error.localizedDescription } }
         }
     }
@@ -49,6 +82,7 @@ final class LibraryStore: ObservableObject {
 
 struct ProjectLibraryView: View {
     @StateObject private var library = LibraryStore()
+    @StateObject private var account = AccountStore()
     @State private var opened: Project?
     @State private var deleting: Project?
     @State private var showAccount = false
@@ -63,7 +97,7 @@ struct ProjectLibraryView: View {
                     Button { library.create { opened = $0 } } label: {
                         HStack { Image(systemName: "plus.circle.fill"); Text("Создать проект").fontWeight(.semibold); Spacer(); Image(systemName: "arrow.up.right") }
                             .padding(20).background(Color.accentColor, in: RoundedRectangle(cornerRadius: 20)).foregroundStyle(.black)
-                    }.accessibilityIdentifier("library.create")
+                    }.accessibilityIdentifier("library.create").disabled(library.repository == nil)
                     HStack { Text("Мои проекты").font(.title3.bold()); Spacer(); Text("\(library.projects.count)").foregroundStyle(.secondary) }
                     if library.loading { ProgressView().frame(maxWidth: .infinity) }
                     else if library.projects.isEmpty {
@@ -95,27 +129,15 @@ struct ProjectLibraryView: View {
             }.navigationTitle("APIKS").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button { showAccount = true } label: { Image(systemName: "person.crop.circle").frame(width: 44, height: 44) }.accessibilityLabel("Аккаунт") } }
                 .navigationDestination(isPresented: Binding(get: { opened != nil }, set: { if !$0 { opened = nil } })) {
-                    if let p = opened { EditorScreen(project: p, repository: library.repository).onDisappear { library.reload() } }
+                    if let p = opened, let repo = library.repository { EditorScreen(project: p, repository: repo).onDisappear { library.reload() } }
                 }
-                .sheet(isPresented: $showAccount) { AccountPlaceholderView() }
+                .sheet(isPresented: $showAccount) { AccountScreen(account: account, localCleanup: library.deleteAccountProjects) }
+                .task { library.selectOwner(account.session?.user.id) }
+                .onChange(of: account.session?.user.id) { owner in opened = nil; library.selectOwner(owner) }
                 .confirmationDialog("Удалить проект и его исходники с этого устройства?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
                     Button("Удалить", role: .destructive) { if let p = deleting { library.delete(p) }; deleting = nil }
                 }
                 .alert("Не удалось выполнить действие", isPresented: Binding(get: { library.error != nil }, set: { if !$0 { library.error = nil } })) { Button("OK") { library.error = nil } } message: { Text(library.error ?? "") }
-        }
-    }
-}
-
-struct AccountPlaceholderView: View {
-    @Environment(\.dismiss) private var dismiss
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 18) {
-                Image(systemName: "person.crop.circle").font(.system(size: 64)).foregroundStyle(Color.accentColor)
-                Text("Монтаж доступен без регистрации").font(.title2.bold()).multilineTextAlignment(.center)
-                Text("Проекты сохраняются на этом устройстве. Вход в аккаунт не отправляет видео в облако.")
-                    .foregroundStyle(.secondary).multilineTextAlignment(.center)
-            }.padding(28).navigationTitle("Аккаунт").toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Готово") { dismiss() } } }
         }
     }
 }
