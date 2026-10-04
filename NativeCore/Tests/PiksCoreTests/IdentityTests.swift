@@ -3,7 +3,7 @@ import Foundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
-@testable import PiksCore
+import PiksCore
 
 private final class MemoryVault: SessionVault, @unchecked Sendable {
     private let lock = NSLock()

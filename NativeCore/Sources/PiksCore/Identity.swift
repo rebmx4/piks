@@ -29,6 +29,7 @@ public struct IdentityFailure: Error, LocalizedError, Sendable {
     public let status: Int
     public let message: String
     public var errorDescription: String? { message }
+    public init(status: Int, message: String) { self.status = status; self.message = message }
 }
 public protocol SessionVault: Sendable {
     func read() throws -> Data?
