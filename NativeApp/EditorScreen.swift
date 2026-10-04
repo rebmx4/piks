@@ -53,6 +53,8 @@ struct EditorScreen: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         tool("Медиа", "plus") { importLane = 0; picker = true }
+                        tool("Файлы", "folder") { importLane = 0; filePicker = true }
+                        tool("Формат", "aspectratio") { panel = .canvas }
                         tool("Разрез", "scissors") { if let id = store.selected { store.edit(.split(id, at: store.playhead)) } }.disabled(store.selected == nil)
                         tool("Обрезка", "arrow.left.and.right") { panel = .trim }.disabled(store.selected == nil)
                         tool("Скорость", "speedometer") { panel = .speed }.disabled(store.selected == nil)

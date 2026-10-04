@@ -50,6 +50,12 @@ final class TimelineLayout: UICollectionViewLayout {
     override func layoutAttributesForItem(at indexPath: IndexPath) -> UICollectionViewLayoutAttributes? {
         attributes.indices.contains(indexPath.item) ? attributes[indexPath.item] : nil
     }
+    func nearestIndexPath(to point: CGPoint) -> IndexPath? {
+        attributes.filter { attribute in
+            let frame = attribute.frame
+            return frame.insetBy(dx: -max(0, (44 - frame.width) / 2), dy: -max(0, (44 - frame.height) / 2)).contains(point)
+        }.min { a, b in abs(a.frame.midX - point.x) < abs(b.frame.midX - point.x) }?.indexPath
+    }
     override func shouldInvalidateLayout(forBoundsChange newBounds: CGRect) -> Bool {
         newBounds.width != collectionView?.bounds.width
     }
@@ -59,6 +65,7 @@ final class TimelineCell: UICollectionViewCell {
     let thumbnail = UIImageView()
     let name = UILabel()
     let durationLabel = UILabel()
+    var activate: (() -> Void)?
     override init(frame: CGRect) {
         super.init(frame: frame)
         contentView.layer.cornerRadius = 8; contentView.clipsToBounds = true
@@ -69,6 +76,7 @@ final class TimelineCell: UICollectionViewCell {
         isAccessibilityElement = true
     }
     required init?(coder: NSCoder) { nil }
+    override func accessibilityActivate() -> Bool { activate?(); return activate != nil }
     override func layoutSubviews() {
         super.layoutSubviews()
         thumbnail.frame = CGRect(x: 0, y: 0, width: min(75, bounds.width), height: bounds.height)
@@ -101,6 +109,7 @@ final class TimelineView: UIView, UICollectionViewDataSource, UICollectionViewDe
     override init(frame: CGRect) {
         super.init(frame: frame)
         collection.dataSource = self; collection.delegate = self
+        collection.allowsSelection = false
         collection.register(TimelineCell.self, forCellWithReuseIdentifier: "Clip")
         collection.backgroundColor = .clear; collection.showsHorizontalScrollIndicator = false
         collection.showsVerticalScrollIndicator = true; collection.decelerationRate = .fast
@@ -110,8 +119,23 @@ final class TimelineView: UIView, UICollectionViewDataSource, UICollectionViewDe
         ruler.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium); ruler.textColor = .secondaryLabel
         addSubview(collection); addSubview(needle); addSubview(ruler)
         let pinch = UIPinchGestureRecognizer(target: self, action: #selector(zoom(_:))); addGestureRecognizer(pinch)
+        collection.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(selectAtTouch(_:))))
     }
     required init?(coder: NSCoder) { nil }
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard isUserInteractionEnabled, !isHidden, alpha > 0.01, bounds.contains(point) else { return nil }
+        collection.layoutIfNeeded()
+        if let index = timelineLayout.nearestIndexPath(to: collection.convert(point, from: self)),
+           let cell = collection.cellForItem(at: index) { return cell }
+        return super.hitTest(point, with: event)
+    }
+    @objc private func selectAtTouch(_ gesture: UITapGestureRecognizer) {
+        guard gesture.state == .ended,
+              let path = timelineLayout.nearestIndexPath(to: gesture.location(in: collection)),
+              let project, project.clips.indices.contains(path.item) else { return }
+        onSelect?(project.clips[path.item].id)
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
     override func layoutSubviews() {
         super.layoutSubviews(); collection.frame = bounds
         timelineLayout.gutter = bounds.width / 2; timelineLayout.invalidateLayout()
@@ -126,7 +150,7 @@ final class TimelineView: UIView, UICollectionViewDataSource, UICollectionViewDe
             timelineLayout.clips = project.clips; timelineLayout.duration = project.duration
             timelineLayout.invalidateLayout(); collection.reloadData()
         }
-        ruler.text = "\(formatTime(playhead))      ·      \(Int(timelineLayout.pointsPerSecond)) pt/с      ·      \(project.fps) fps"
+        ruler.text = "\(formatTime(playhead))  /  \(formatTime(project.duration))"
         if !collection.isDragging && !collection.isDecelerating {
             let x = CGFloat(playhead) * timelineLayout.pointsPerSecond
             if abs(collection.contentOffset.x - x) > 0.5 { collection.setContentOffset(CGPoint(x: x, y: collection.contentOffset.y), animated: false) }
@@ -138,6 +162,7 @@ final class TimelineView: UIView, UICollectionViewDataSource, UICollectionViewDe
         if let project, project.clips.indices.contains(indexPath.item) {
             let clip = project.clips[indexPath.item]
             cell.set(clip: clip, asset: project.assets.first { $0.id == clip.assetID }, image: images[clip.assetID], selected: selected == clip.id)
+            cell.activate = { [weak self] in self?.onSelect?(clip.id) }
         }
         return cell
     }

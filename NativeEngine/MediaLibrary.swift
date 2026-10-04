@@ -6,7 +6,8 @@ import PiksCore
 
 actor MediaLibrary {
     let repository: ProjectRepository
-    private var proxies: [UUID: Task<URL, Error>] = [:]
+    private var proxies: [UUID: (id: UUID, task: Task<URL, Error>)] = [:]
+    private let proxyGate = MediaWorkGate()
     init(repository: ProjectRepository) { self.repository = repository }
 
     func importFile(_ source: URL, project: UUID) async throws -> MediaAsset {
@@ -64,12 +65,15 @@ actor MediaLibrary {
         guard asset.kind == .video, min(asset.width, asset.height) > 1080 else { return original }
         let output = try repository.assetURL(project: project, asset: asset, mode: .proxy)
         if FileManager.default.fileExists(atPath: output.path) { return output }
-        if let task = proxies[asset.id] { return try await task.value }
+        if let job = proxies[asset.id] { return try await job.task.value }
+        let gate = proxyGate
+        let generation = UUID()
         let task = Task<URL, Error> {
+            try await gate.withPermit {
             guard let session = AVAssetExportSession(asset: AVURLAsset(url: original), presetName: AVAssetExportPreset1920x1080) else {
                 throw EditorError.invalid("Не удалось создать копию для монтажа.")
             }
-            let partial = output.deletingPathExtension().appendingPathExtension("partial.mp4")
+            let partial = output.deletingPathExtension().appendingPathExtension("\(UUID().uuidString).partial.mp4")
             try? FileManager.default.removeItem(at: partial)
             session.outputURL = partial; session.outputFileType = .mp4; session.shouldOptimizeForNetworkUse = true
             do {
@@ -77,7 +81,8 @@ actor MediaLibrary {
                     try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                         session.exportAsynchronously {
                             if session.status == .completed { continuation.resume() }
-                            else { continuation.resume(throwing: session.error ?? CancellationError()) }
+                            else if session.status == .cancelled { continuation.resume(throwing: CancellationError()) }
+                            else { continuation.resume(throwing: session.error ?? EditorError.invalid("Копия для монтажа не создалась.")) }
                         }
                     }
                 }, onCancel: { session.cancelExport() })
@@ -85,9 +90,10 @@ actor MediaLibrary {
                 try FileManager.default.moveItem(at: partial, to: output)
                 return output
             } catch { try? FileManager.default.removeItem(at: partial); throw error }
+            }
         }
-        proxies[asset.id] = task
-        defer { proxies[asset.id] = nil }
+        proxies[asset.id] = (generation, task)
+        defer { if proxies[asset.id]?.id == generation { proxies[asset.id] = nil } }
         return try await task.value
     }
 
@@ -107,7 +113,7 @@ actor MediaLibrary {
         let cg = try await generator.image(at: CMTime(seconds: min(time, max(0, asset.duration - 0.01)), preferredTimescale: 600)).image
         return UIImage(cgImage: cg)
     }
-    func cancelProxies() { for task in proxies.values { task.cancel() }; proxies.removeAll() }
+    func cancelProxies() { for job in proxies.values { job.task.cancel() }; proxies.removeAll() }
 
     func discard(_ asset: MediaAsset, project: UUID) {
         // Only a new asset that was not accepted into the project may be discarded.
