@@ -23,3 +23,15 @@ Podfile.lock
 
 # macOS
 .DS_Store
+
+# Native build and local-only credentials
+.build/
+.swiftpm/
+.venv/
+__pycache__/
+*.pyc
+.env
+*.pem
+*.p8
+*.p12
+*.mobileprovision
