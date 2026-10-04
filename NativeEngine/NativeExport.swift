@@ -4,17 +4,11 @@ import CoreImage
 import Photos
 import UIKit
 
-// Нативный экспорт Ryndi: ролик собирает сам телефон, как CapCut.
-//
-// Зачем. Страница в браузере собирает ролик медленнее реального времени
-// (1080p в Safari — около 0,5–1×), не читает HEVC 10 бит с айфона и не
-// потянет несколько слоёв видео. Телефон делает то же видеокартой и
-// аппаратным кодировщиком в разы быстрее.
-//
-// Как устроено. Страница присылает ПЛАН (web/core/nativeplan.js): какие
-// куски каких роликов где стоят, и для каждого кадра — готовую матрицу,
-// куда поставить кадр исходника. Считать здесь нечего: матрицы уже сверены
-// тестами с превью. Телефон:
+// Native AVFoundation exporter. The Swift RenderPlanBuilder and RenderAdapter
+// supply the same validated timeline to preview and export. Original-resolution
+// export always resolves local originals; preview may use device-local proxies.
+// The compositor was ported from the existing native renderer without its web bridge.
+// Pipeline:
 //   1) складывает куски в дорожки AVMutableComposition;
 //   2) на каждый кадр выхода берёт кадры дорожек и кладёт их слоями по
 //      матрицам (RyndiCompositor, Core Image на видеокарте);
@@ -50,7 +44,7 @@ import UIKit
 //   - фото: ролик плана — картинка (jpg/png/heic): неподвижный кадр, движение —
 //     строками кадра, как у видео. В плане нужен хотя бы один кусок видео.
 
-// MARK: - План со страницы
+// MARK: - Internal compositor plan
 
 struct ExportPlan {
     struct Item {
@@ -312,17 +306,17 @@ final class RenderScene {
         for (index, layer) in layers.enumerated() {
             // Куски слоя в этот миг: обычно один, при переходе — два (нахлёст).
             var placed: CIImage? = nil
-            for item in RenderScene.items(in: layer, at: t) {
+            let activeItems = RenderScene.items(in: layer, at: t)
+            for item in activeItems {
                 guard let image = render(item, at: t, k: k, frame: frame) else { continue }
                 placed = placed.map { image.composited(over: $0) } ?? image
             }
             if index == 0 {
-                // Основной слой не пустеет: на стыке кусков или в последнем
-                // кадре держим прошлый кадр, а не вспышку чёрного.
+                // Bridge a single missing decoder frame only within an active clip.
+                // A deliberate timeline gap must show the background.
                 if let image = placed { lastMain = image; lastK = k }
-                // Экспорт идёт по порядку — держим, как раньше (до 2 с); проигрыватель
-                // перемотал назад или далеко — прошлый кадр чужой.
-                else if k >= lastK && k - lastK <= Int(fps * 2) { placed = lastMain }
+                else if !activeItems.isEmpty, k >= lastK, k - lastK <= 1 { placed = lastMain }
+                else { lastMain = nil; lastK = -1_000_000 }
             }
             if let image = placed { out = image.composited(over: out) }
         }
