@@ -22,10 +22,11 @@ final class NativeRenderingTests: XCTestCase {
         let typed = try RenderPlanBuilder.build(p, mode: .export)
         let temps = TempFiles(); defer { temps.removeAll() }
         let assembly = try NativeExporter.assemble(RenderAdapter.plan(typed), RenderAdapter.files(typed, repository: repo, usage: .export), temps: temps)
+        let scene = try XCTUnwrap(assembly.video.instructions.first as? RyndiInstruction).scene
         let context = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()])
         func red(_ x: Int, at time: Double) -> UInt8 {
             var pixel = [UInt8](repeating: 0, count: 4)
-            let frame = assembly.scene.compose(at: time, frame: { _ in nil })
+            let frame = scene.compose(at: time, frame: { _ in nil })
             context.render(frame, toBitmap: &pixel, rowBytes: 4, bounds: CGRect(x: x, y: 80, width: 1, height: 1), format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
             return pixel[0]
         }
