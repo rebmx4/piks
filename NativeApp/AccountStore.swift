@@ -34,7 +34,7 @@ final class AccountStore: ObservableObject {
     func loadCapabilities() async {
         guard let client else { return }
         do { capabilities = try await client.capabilities(); error = nil }
-        catch { error = "Вход временно недоступен. Монтаж без регистрации работает." }
+        catch { self.error = "Вход временно недоступен. Монтаж без регистрации работает." }
         await prepareApple()
     }
     func prepareApple() async {
