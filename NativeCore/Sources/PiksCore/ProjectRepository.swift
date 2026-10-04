@@ -24,7 +24,8 @@ public final class ProjectRepository: @unchecked Sendable {
         let manifest = location.appendingPathComponent("project.json")
         let backup = location.appendingPathComponent("previous.json")
         if let saved = try? load(project.id) {
-            guard saved.revision <= project.revision else { throw EditorError.staleRevision }
+            if saved == project { return }
+            guard saved.revision < project.revision else { throw EditorError.staleRevision }
             if files.fileExists(atPath: manifest.path), (try? decode(manifest)) != nil {
                 try Data(contentsOf: manifest).write(to: backup, options: .atomic)
             }

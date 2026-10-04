@@ -81,4 +81,25 @@ final class StorageTests: XCTestCase {
         XCTAssertThrowsError(try repo.save(p))
         XCTAssertEqual(try repo.load(p.id).name, "Newest")
     }
+
+    func testEqualRevisionWithDifferentContentCannotOverwriteCompletedSave() throws {
+        let repo = try ProjectRepository(root: root, owner: nil)
+        var p = Project(name: "Committed")
+        p.revision = 5
+        try repo.save(p)
+        p.name = "Concurrent stale edit"
+        XCTAssertThrowsError(try repo.save(p))
+        XCTAssertEqual(try repo.load(p.id).name, "Committed")
+    }
+
+    func testRepeatedIdenticalAutosaveKeepsPreviousRecoveryVersion() throws {
+        let repo = try ProjectRepository(root: root, owner: nil)
+        var p = Project(name: "Before")
+        try repo.save(p)
+        p.name = "After"; p.revision = 1
+        try repo.save(p)
+        try repo.save(p)
+        try Data("corrupt".utf8).write(to: repo.projectURL(p.id).appendingPathComponent("project.json"))
+        XCTAssertEqual(try repo.load(p.id).name, "Before")
+    }
 }
