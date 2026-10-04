@@ -6,6 +6,17 @@ public struct GainPoint: Equatable, Sendable {
     public init(time: Double, gain: Double) { self.time = time; self.gain = gain }
 }
 
+/// Evaluate only the requested animation sample, regardless of project length.
+public struct RenderMotion: Sendable {
+    public let clip: Clip
+    public let asset: MediaAsset
+    public let width: Int
+    public let height: Int
+    public func matrix(at time: Double) -> [Double] {
+        RenderPlanBuilder.matrix(clip: clip, asset: asset, time: max(0, min(clip.duration, time)), width: width, height: height)
+    }
+}
+
 public struct RenderItem: Sendable {
     public let clipID: UUID
     public let assetID: UUID
@@ -14,8 +25,10 @@ public struct RenderItem: Sendable {
     public let duration: Double
     public let sourceDuration: Double
     public let transforms: [[Double]]
+    public let motion: RenderMotion?
     public let crop: UnitRect
     public let effects: ClipEffects
+    public func matrix(at time: Double) -> [Double] { motion?.matrix(at: time) ?? transforms[0] }
 }
 
 public struct RenderSound: Sendable {
@@ -59,14 +72,11 @@ public enum RenderPlanBuilder {
             used.insert(asset.id)
             if asset.kind != .audio && clip.lane >= 0 {
                 let animated = !clip.keyframes.isEmpty || clip.transitionIn > 0
-                let count = animated ? Int(ceil(clip.duration * Double(project.fps))) + 1 : 1
-                // Keep static clips O(1); moving clips bake only their own output span.
-                let rows = (0..<count).map { i in
-                    matrix(clip: clip, asset: asset, time: Double(i) / Double(project.fps), width: width, height: height)
-                }
+                let rows = [matrix(clip: clip, asset: asset, time: 0, width: width, height: height)]
+                let motion = animated ? RenderMotion(clip: clip, asset: asset, width: width, height: height) : nil
                 visual[clip.lane, default: []].append(RenderItem(clipID: clip.id, assetID: asset.id,
                     at: clip.at, from: clip.sourceStart, duration: clip.duration, sourceDuration: clip.sourceDuration,
-                    transforms: rows, crop: clip.crop, effects: clip.effects))
+                    transforms: rows, motion: motion, crop: clip.crop, effects: clip.effects))
             }
             if (asset.hasAudio || asset.kind == .audio) && !clip.muted {
                 let sum = clip.fadeIn + clip.fadeOut

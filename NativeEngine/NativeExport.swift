@@ -3,6 +3,7 @@ import AVFoundation
 import CoreImage
 import Photos
 import UIKit
+import PiksCore
 
 // Native AVFoundation exporter. The Swift RenderPlanBuilder and RenderAdapter
 // supply the same validated timeline to preview and export. Original-resolution
@@ -54,6 +55,7 @@ struct ExportPlan {
         let dur: Double
         let k0: Int
         let frames: [[Double]]      // [a, b, c, d, tx, ty, прозрачность] на кадр, начиная с k0
+        let motion: RenderMotion?   // native keyframes, sampled on demand
         let fx: Fx?                 // настройки цвета куска, nil — без них
         let src: Double?            // длина в исходнике (скорость), nil — равна dur
         let crop: CGRect?           // обрезка: доли кадра, как видит зритель, y вниз
@@ -163,7 +165,8 @@ struct ExportPlan {
                 }
                 let srcLen = ExportPlan.num(raw["src"]).flatMap { $0 > 0 ? $0 : nil }
                 items.append(Item(media: mid, at: at, from: from, dur: dur,
-                                  k0: ExportPlan.int(raw["k0"]) ?? 0, frames: rows, fx: fx,
+                                  k0: ExportPlan.int(raw["k0"]) ?? 0, frames: rows,
+                                  motion: raw["motion"] as? RenderMotion, fx: fx,
                                   src: srcLen, crop: crop, mask: ExportPlan.ints(raw["mask"]),
                                   ci: ExportPlan.steps(raw["ci"])))
             }
@@ -265,6 +268,7 @@ final class RenderScene {
         let end: Double
         let k0: Int
         let frames: [[Double]]
+        let motion: RenderMotion?
         let pref: CGAffineTransform     // поворот хранения исходника
         let fx: ExportPlan.Fx?
         let crop: CGRect?
@@ -391,6 +395,7 @@ final class RenderScene {
     }
 
     private func sample(_ item: Item, at t: Double) -> [Double] {
+        if let motion = item.motion { return motion.matrix(at: t - item.at) }
         if item.frames.count == 1 { return item.frames[0] }
         let k = Int((t * fps).rounded()) - item.k0
         return item.frames[max(0, min(item.frames.count - 1, k))]
@@ -852,7 +857,7 @@ final class NativeExporter {
             for it in layer {
                 if let img = still(it.media) {
                     items.append(RenderScene.Item(trackID: kCMPersistentTrackID_Invalid, still: img,
-                                                  at: it.at, end: it.at + it.dur, k0: it.k0, frames: it.frames,
+                                                  at: it.at, end: it.at + it.dur, k0: it.k0, frames: it.frames, motion: it.motion,
                                                   pref: .identity, fx: it.fx, crop: it.crop,
                                                   mask: it.mask.map { maskImage($0) }, ci: it.ci))
                     continue
@@ -878,7 +883,7 @@ final class NativeExporter {
                 guard let chosen = track else { throw ExportError("не создаётся дорожка видео") }
                 try place(chosen, src, at: it.at, from: it.from, dur: it.dur, srcDur: it.src, ends: &ends)
                 items.append(RenderScene.Item(trackID: chosen.trackID, still: nil, at: it.at, end: it.at + it.dur,
-                                              k0: it.k0, frames: it.frames, pref: src.preferredTransform,
+                                              k0: it.k0, frames: it.frames, motion: it.motion, pref: src.preferredTransform,
                                               fx: it.fx, crop: it.crop, mask: it.mask.map { maskImage($0) }, ci: it.ci))
             }
             // Нахлёст меньше полукадра — округление плана, а не переход: в

@@ -24,6 +24,7 @@ enum RenderAdapter {
                 return ["media": item.assetID.uuidString, "at": item.at, "from": item.from,
                         "dur": item.duration, "src": item.sourceDuration,
                         "k0": Int((item.at * Double(model.fps)).rounded()), "frames": item.transforms,
+                        "motion": item.motion as Any,
                         "crop": [item.crop.x, item.crop.y, item.crop.width, item.crop.height], "ci": ci,
                         "fx": ["lut": -1, "sharpen": e.sharpen, "vignette": e.vignette, "grain": e.grain]]
             }]

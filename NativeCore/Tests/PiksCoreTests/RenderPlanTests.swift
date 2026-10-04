@@ -42,7 +42,7 @@ final class RenderPlanTests: XCTestCase {
         var p = fixture()
         p.clips[0].keyframes = [TransformKeyframe(time: 0, scale: 1), TransformKeyframe(time: 10, scale: 2, opacity: 0)]
         let plan = try RenderPlanBuilder.build(p, mode: .export)
-        let middle = plan.layers[0][0].transforms[150]
+        let middle = plan.layers[0][0].matrix(at: 5)
         XCTAssertEqual(middle[0], 5760, accuracy: 0.01)
         XCTAssertEqual(middle[6], 0.5, accuracy: 0.0001)
     }
@@ -62,5 +62,18 @@ final class RenderPlanTests: XCTestCase {
         let plan = try RenderPlanBuilder.build(p, mode: .export)
         XCTAssertEqual(plan.layers[0][0].transforms.count, 1)
         XCTAssertEqual(plan.frames, 108000)
+    }
+
+    func testHourLongAnimationDoesNotBakeEveryOutputFrame() throws {
+        var p = fixture()
+        p.assets[0].duration = 3600; p.clips[0].sourceDuration = 3600
+        p.clips[0].keyframes = [TransformKeyframe(time: 0), TransformKeyframe(time: 3600, scale: 2, rotation: 90)]
+        let plan = try RenderPlanBuilder.build(p, mode: .export)
+        XCTAssertEqual(plan.layers[0][0].transforms.count, 1, "Keep animation parameters and evaluate the current frame on demand")
+        XCTAssertEqual(plan.frames, 108000)
+        let middle = plan.layers[0][0].matrix(at: 1800)
+        XCTAssertEqual(middle[0], 3840 * 1.5 * cos(.pi / 4), accuracy: 0.01)
+        XCTAssertEqual(middle[1], middle[0], accuracy: 0.01)
+        XCTAssertEqual(plan.layers[0][0].matrix(at: 3600)[6], 1)
     }
 }
