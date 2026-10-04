@@ -21,7 +21,7 @@ workflows:
           xcodebuild test -project PiksNative.xcodeproj -scheme PiksNative \
             -destination "platform=iOS Simulator,id=$DEVICE" \
             -resultBundlePath build/native-tests.xcresult \
-            CODE_SIGNING_ALLOWED=NO > build-native.log 2>&1 || {
+            CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY="-" > build-native.log 2>&1 || {
               tail -n 100 build-native.log
               exit 1
             }
