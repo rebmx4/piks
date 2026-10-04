@@ -1,0 +1,64 @@
+"""Codemagic API with a DPAPI-encrypted token outside the repository."""
+import argparse
+import json
+import os
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+APP_ID = "6a63db4c3af355606a7e671e"
+API = "https://api.codemagic.io"
+
+
+def token():
+    if os.environ.get("CODEMAGIC_API_TOKEN"):
+        return os.environ["CODEMAGIC_API_TOKEN"]
+    script = r"""
+$piksSecretPath=Join-Path $env:LOCALAPPDATA 'PiksNative\codemagic-token.xml'
+$piksSecure=Import-Clixml -LiteralPath $piksSecretPath
+$piksPointer=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($piksSecure)
+try {[Console]::Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR($piksPointer))}
+finally {[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($piksPointer)}
+"""
+    result = subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True, check=True)
+    return result.stdout.decode().strip()
+
+
+def request(path, method="GET", body=None):
+    payload = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(API + path, data=payload, method=method,
+        headers={"x-auth-token": token(), "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=45) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        # Never dump a request, headers or credential.
+        raise RuntimeError(f"Codemagic API HTTP {error.code}: {error.read().decode()[:400]}") from None
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("apps")
+    start = sub.add_parser("start")
+    start.add_argument("--workflow", default="native-validate")
+    start.add_argument("--branch", default="native-production")
+    status = sub.add_parser("status")
+    status.add_argument("build_id")
+    args = parser.parse_args()
+    if args.command == "apps":
+        response = request("/apps")
+        apps = response.get("applications", response.get("apps", [])) if isinstance(response, dict) else response
+        print(json.dumps([{k: app.get(k) for k in ("_id", "id", "appName", "name", "repository")}
+                          for app in apps if "piks" in json.dumps(app).lower()], ensure_ascii=False))
+    elif args.command == "start":
+        print(json.dumps(request("/builds", "POST", {"appId": APP_ID, "workflowId": args.workflow, "branch": args.branch})))
+    else:
+        response = request("/builds/" + args.build_id)
+        build = response.get("build", response)
+        print(json.dumps({key: build.get(key) for key in ("_id", "status", "workflowId", "branch", "startedAt", "finishedAt", "buildSteps", "artefacts")}, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()

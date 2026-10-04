@@ -1,4 +1,34 @@
 workflows:
+  native-validate:
+    name: APIKS Native — compile and XCTest
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+    environment:
+      xcode: latest
+    scripts:
+      - name: Native architecture checks
+        script: python3 scripts/native/check_structure.py
+      - name: Core Swift tests
+        script: cd NativeCore && swift test --jobs 2
+      - name: Install XcodeGen
+        script: HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen
+      - name: Generate isolated native project
+        script: xcodegen generate --spec project-native.yml
+      - name: Simulator compile and media tests
+        script: |
+          set -e
+          DEVICE=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for a in d["devices"].values() for x in a if "iPhone" in x["name"]))')
+          xcodebuild test -project PiksNative.xcodeproj -scheme PiksNative \
+            -destination "platform=iOS Simulator,id=$DEVICE" \
+            -resultBundlePath build/native-tests.xcresult \
+            CODE_SIGNING_ALLOWED=NO > build-native.log 2>&1 || {
+              tail -n 100 build-native.log
+              exit 1
+            }
+          tail -n 18 build-native.log
+    artifacts:
+      - build-native.log
+      - build/native-tests.xcresult
   ios-app-store:
     name: Piks iOS TestFlight
     max_build_duration: 60

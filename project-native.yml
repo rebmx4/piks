@@ -1,0 +1,51 @@
+name: PiksNative
+options:
+  deploymentTarget:
+    iOS: "16.0"
+  developmentLanguage: ru
+settings:
+  base:
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    DEVELOPMENT_TEAM: GR3WB4Z646
+packages:
+  PiksCore:
+    path: NativeCore
+targets:
+  PiksNative:
+    type: application
+    platform: iOS
+    sources:
+      - path: NativeApp
+      - path: NativeEngine
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.piks.app.native
+        PRODUCT_NAME: PiksNative
+        INFOPLIST_FILE: NativeApp/Info.plist
+        CODE_SIGN_ENTITLEMENTS: NativeApp/NativeApp.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Manual
+    dependencies:
+      - package: PiksCore
+  PiksNativeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: NativeTests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.piks.app.native.tests
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: PiksNative
+schemes:
+  PiksNative:
+    build:
+      targets:
+        PiksNative: all
+        PiksNativeTests: [test]
+    test:
+      targets: [PiksNativeTests]
