@@ -108,4 +108,13 @@ actor MediaLibrary {
         return UIImage(cgImage: cg)
     }
     func cancelProxies() { for task in proxies.values { task.cancel() }; proxies.removeAll() }
+
+    func discard(_ asset: MediaAsset, project: UUID) {
+        // Only a new asset that was not accepted into the project may be discarded.
+        for mode in [ProjectRepository.AssetMode.original, .proxy] {
+            if let url = try? repository.assetURL(project: project, asset: asset, mode: mode) {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+    }
 }

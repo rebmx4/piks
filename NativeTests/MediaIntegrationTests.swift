@@ -55,23 +55,33 @@ final class MediaIntegrationTests: XCTestCase {
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
             kCVPixelBufferWidthKey as String: width, kCVPixelBufferHeightKey as String: height])
         writer.add(input); XCTAssertTrue(writer.startWriting()); writer.startSession(atSourceTime: .zero)
-        for i in 0..<12 {
-            var pixel: CVPixelBuffer?
-            XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, nil, &pixel), kCVReturnSuccess)
-            let buffer = try XCTUnwrap(pixel)
-            CVPixelBufferLockBaseAddress(buffer, [])
-            let context = try XCTUnwrap(CGContext(data: CVPixelBufferGetBaseAddress(buffer), width: width, height: height,
-                bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(buffer), space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue))
-            context.setFillColor(color.cgColor); context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-            CVPixelBufferUnlockBaseAddress(buffer, [])
-            let deadline = Date().addingTimeInterval(10)
-            while !input.isReadyForMoreMediaData && Date() < deadline { usleep(1000) }
-            XCTAssertTrue(adaptor.append(buffer, withPresentationTime: CMTime(value: Int64(i), timescale: 30)))
+        var pixel: CVPixelBuffer?
+        XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, nil, &pixel), kCVReturnSuccess)
+        let buffer = try XCTUnwrap(pixel)
+        CVPixelBufferLockBaseAddress(buffer, [])
+        let context = try XCTUnwrap(CGContext(data: CVPixelBufferGetBaseAddress(buffer), width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(buffer), space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue))
+        context.setFillColor(color.cgColor); context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        CVPixelBufferUnlockBaseAddress(buffer, [])
+        let done = DispatchSemaphore(value: 0)
+        var frame = 0
+        var finishing = false
+        input.requestMediaDataWhenReady(on: DispatchQueue(label: "piks.tests.movie-writer")) {
+            while input.isReadyForMoreMediaData && !finishing {
+                if frame == 12 || writer.status != .writing {
+                    finishing = true; input.markAsFinished()
+                    writer.finishWriting { done.signal() }; return
+                }
+                guard adaptor.append(buffer, withPresentationTime: CMTime(value: Int64(frame), timescale: 30)) else {
+                    finishing = true; writer.cancelWriting(); done.signal(); return
+                }
+                frame += 1
+            }
         }
-        input.markAsFinished()
-        let done = DispatchSemaphore(value: 0); writer.finishWriting { done.signal() }
-        XCTAssertEqual(done.wait(timeout: .now() + 20), .success)
+        let completed = done.wait(timeout: .now() + 120)
+        if completed != .success { writer.cancelWriting() }
+        XCTAssertEqual(completed, .success)
         XCTAssertEqual(writer.status, .completed)
     }
 

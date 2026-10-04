@@ -22,12 +22,17 @@ final class EditorStore: ObservableObject {
     private let io = DispatchQueue(label: "piks.native.project-io", qos: .utility)
     private var saveWork: DispatchWorkItem?
     private var previewTask: Task<Void, Never>?
+    private var importTask: Task<Void, Never>?
+    private var exportTask: Task<Void, Never>?
     private var previewTemps: TempFiles?
     private var exporter: NativeExporter?
     private var observer: Any?
     private var endObserver: NSObjectProtocol?
     private var previewGeneration = UUID()
-    private var activity: UIBackgroundTaskIdentifier = .invalid
+    private var activities: [UUID: UIBackgroundTaskIdentifier] = [:]
+    private var closed = false
+    private var exportGeneration = UUID()
+    private var saveGeneration = UUID()
     var project: Project { history.project }
     var selectedClip: Clip? { project.clips.first { $0.id == selected } }
 
@@ -45,28 +50,35 @@ final class EditorStore: ObservableObject {
         refreshPreview(); loadThumbnails()
     }
     func close() {
+        guard !closed else { return }
+        closed = true; importTask?.cancel(); importTask = nil; busy = nil
+        cancelExport(); clearExportedFile()
         player.pause(); isPlaying = false; previewTask?.cancel(); previewGeneration = UUID()
         if let observer { player.removeTimeObserver(observer); self.observer = nil }
         if let endObserver { NotificationCenter.default.removeObserver(endObserver); self.endObserver = nil }
         player.replaceCurrentItem(with: nil); previewTemps?.removeAll(); previewTemps = nil
         saveImmediately(); Task { await media.cancelProxies() }
     }
-    func edit(_ command: EditCommand) {
-        guard exportProgress == nil else { return }
+    @discardableResult
+    func edit(_ command: EditCommand) -> Bool {
+        guard !closed, exportProgress == nil else { return false }
         do {
             try history.apply(command); queueSave(); refreshPreview()
             UISelectionFeedbackGenerator().selectionChanged()
-        } catch { self.error = error.localizedDescription }
+            return true
+        } catch { self.error = error.localizedDescription; return false }
     }
-    func beginGesture() { history.beginTransaction() }
-    func endGesture() { history.endTransaction(); queueSave() }
-    func undo() { history.undo(); queueSave(); refreshPreview() }
-    func redo() { history.redo(); queueSave(); refreshPreview() }
+    func beginGesture() { if !closed, exportProgress == nil { history.beginTransaction() } }
+    func endGesture() { if !closed { history.endTransaction(); queueSave() } }
+    func undo() { guard !closed, exportProgress == nil else { return }; history.undo(); queueSave(); refreshPreview() }
+    func redo() { guard !closed, exportProgress == nil else { return }; history.redo(); queueSave(); refreshPreview() }
     func seek(_ time: Double) {
+        guard !closed else { return }
         playhead = max(0, min(project.duration, time))
         player.seek(to: CMTime(seconds: playhead, preferredTimescale: 30000), toleranceBefore: .zero, toleranceAfter: .zero)
     }
     func togglePlayback() {
+        guard !closed, exportProgress == nil, project.duration > 0 else { return }
         if isPlaying { player.pause(); isPlaying = false }
         else {
             if playhead >= project.duration - 0.01 { seek(0) }
@@ -74,64 +86,85 @@ final class EditorStore: ObservableObject {
         }
     }
     func queueSave() {
+        guard !closed else { return }
         saveWork?.cancel()
+        let generation = UUID(); saveGeneration = generation
         let snapshot = project; let repo = repository
         let work = DispatchWorkItem { [weak self] in
             do { try repo.save(snapshot) }
-            catch { DispatchQueue.main.async { self?.error = error.localizedDescription } }
-            DispatchQueue.main.async { self?.saving = false }
+            catch { DispatchQueue.main.async { if let self, !self.closed, self.saveGeneration == generation { self.error = error.localizedDescription } } }
+            DispatchQueue.main.async { if self?.saveGeneration == generation { self?.saving = false } }
         }
         saving = true; saveWork = work; io.asyncAfter(deadline: .now() + 0.4, execute: work)
     }
     func saveImmediately() {
         saveWork?.cancel()
+        let generation = UUID(); saveGeneration = generation
         let snapshot = project; let repo = repository
-        activity = UIApplication.shared.beginBackgroundTask(withName: "Save project") { [weak self] in self?.finishActivity() }
-        io.async { [weak self] in
+        let operation = UUID()
+        activities[operation] = UIApplication.shared.beginBackgroundTask(withName: "Save project") { [weak self] in self?.finishActivity(operation) }
+        saving = true
+        // Retain the owner until this save ends its own background activity.
+        io.async { [self] in
             do { try repo.save(snapshot) }
-            catch { DispatchQueue.main.async { self?.error = error.localizedDescription } }
-            DispatchQueue.main.async { self?.saving = false; self?.finishActivity() }
+            catch { DispatchQueue.main.async { if !self.closed, self.saveGeneration == generation { self.error = error.localizedDescription } } }
+            DispatchQueue.main.async {
+                if self.saveGeneration == generation { self.saving = false }
+                self.finishActivity(operation)
+            }
         }
     }
-    private func finishActivity() {
-        if activity != .invalid { UIApplication.shared.endBackgroundTask(activity); activity = .invalid }
+    private func finishActivity(_ operation: UUID) {
+        if let activity = activities.removeValue(forKey: operation), activity != .invalid { UIApplication.shared.endBackgroundTask(activity) }
     }
     func importFiles(_ files: [URL], lane: Int = 0) {
-        guard busy == nil, exportProgress == nil else { return }
+        guard !closed, busy == nil, exportProgress == nil, !files.isEmpty else { return }
         busy = "Импорт файлов…"
         let id = project.id
-        Task {
-            defer { busy = nil }
+        importTask = Task {
+            defer { busy = nil; importTask = nil }
             for file in files {
                 do {
+                    try Task.checkCancellation()
                     let a = try await media.importFile(file, project: id)
-                    guard project.id == id else { return }
+                    guard !closed, !Task.isCancelled, project.id == id else {
+                        await media.discard(a, project: id); return
+                    }
                     let chosenLane = a.kind == .audio ? -1 : lane
                     let at = chosenLane == 0 ? project.clips.filter { $0.lane == 0 }.map(\.end).max() ?? 0 : playhead
-                    edit(.importMedia(a, lane: chosenLane, at: at, duration: a.kind == .image ? 5 : a.duration))
+                    guard edit(.importMedia(a, lane: chosenLane, at: at, duration: a.kind == .image ? 5 : a.duration)) else {
+                        await media.discard(a, project: id); continue
+                    }
                     selected = project.clips.last?.id
                     loadThumbnails()
                     if a.kind == .video {
                         Task {
-                            do { _ = try await media.proxy(for: a, project: id); if project.id == id { refreshPreview() } }
-                            catch { if !(error is CancellationError) { self.error = error.localizedDescription } }
+                            guard !closed else { return }
+                            do { _ = try await media.proxy(for: a, project: id); if !closed, project.id == id { refreshPreview() } }
+                            catch { if !closed, !(error is CancellationError) { self.error = error.localizedDescription } }
                         }
                     }
-                } catch { self.error = error.localizedDescription }
+                } catch {
+                    if closed || Task.isCancelled { return }
+                    self.error = error.localizedDescription
+                }
             }
         }
     }
     private func loadThumbnails() {
+        guard !closed else { return }
         let snapshot = project
         Task {
             for asset in snapshot.assets where asset.kind != .audio && thumbnails[asset.id] == nil {
-                if let image = try? await media.thumbnail(for: asset, project: snapshot.id), project.id == snapshot.id {
+                guard !closed else { return }
+                if let image = try? await media.thumbnail(for: asset, project: snapshot.id), !closed, project.id == snapshot.id {
                     thumbnails[asset.id] = image
                 }
             }
         }
     }
     func refreshPreview() {
+        guard !closed else { return }
         previewTask?.cancel(); let generation = UUID(); previewGeneration = generation
         let snapshot = project; let repo = repository
         guard snapshot.duration > 0 else { player.replaceCurrentItem(with: nil); return }
@@ -146,7 +179,7 @@ final class EditorStore: ObservableObject {
                     do { return (try NativeExporter.assemble(RenderAdapter.plan(typed), files, temps: temps), temps) }
                     catch { temps.removeAll(); throw error }
                 }.value
-                guard let self, !Task.isCancelled, self.previewGeneration == generation,
+                guard let self, !self.closed, !Task.isCancelled, self.previewGeneration == generation,
                       self.project.id == snapshot.id, self.project.revision == snapshot.revision else {
                     prepared.1.removeAll(); return
                 }
@@ -157,24 +190,26 @@ final class EditorStore: ObservableObject {
                 self.seek(self.playhead)
                 if self.isPlaying { self.player.play() }
             } catch {
-                if !Task.isCancelled, let self, self.previewGeneration == generation { self.error = error.localizedDescription }
+                if !Task.isCancelled, let self, !self.closed, self.previewGeneration == generation { self.error = error.localizedDescription }
             }
         }
     }
     func export(saveToPhotos: Bool) {
-        guard exporter == nil, project.duration > 0, busy == nil else { return }
+        guard !closed, exportProgress == nil, project.duration > 0, busy == nil else { return }
+        clearExportedFile()
+        let generation = UUID(); exportGeneration = generation
         player.pause(); isPlaying = false; exportProgress = 0
         let snapshot = project, repo = repository
-        Task {
+        exportTask = Task {
             do {
                 let pair = try await Task.detached(priority: .userInitiated) { () -> (ExportPlan, [String: URL]) in
                     let typed = try RenderPlanBuilder.build(snapshot, mode: .export)
                     return (try RenderAdapter.plan(typed, save: saveToPhotos), try RenderAdapter.files(typed, repository: repo, usage: .export))
                 }.value
-                guard exportProgress != nil else { return }
+                guard !closed, !Task.isCancelled, exportGeneration == generation else { return }
                 let job = NativeExporter(job: UUID().uuidString, plan: pair.0, send: { [weak self] event in
                     DispatchQueue.main.async {
-                        guard let self else { return }
+                        guard let self, !self.closed, self.exportGeneration == generation else { return }
                         if let value = event["value"] as? Double { self.exportProgress = value }
                         if event["event"] as? String == "export-error" { self.error = event["reason"] as? String }
                         if let reason = event["saveError"] as? String { self.error = reason }
@@ -182,11 +217,23 @@ final class EditorStore: ObservableObject {
                 }, resolve: { id, done in done(pair.1[id]) })
                 exporter = job
                 job.onFinish = { [weak self] file in
-                    self?.exportProgress = nil; self?.exporter = nil; self?.exportedFile = file
+                    guard let self, !self.closed, self.exportGeneration == generation else {
+                        if let file { try? FileManager.default.removeItem(at: file) }; return
+                    }
+                    self.exportProgress = nil; self.exporter = nil; self.exportedFile = file
                 }
                 job.start()
-            } catch { exportProgress = nil; self.error = error.localizedDescription }
+            } catch {
+                if !closed, exportGeneration == generation { exportProgress = nil; self.error = error.localizedDescription }
+            }
         }
     }
-    func cancelExport() { exporter?.cancel(); if exporter == nil { exportProgress = nil } }
+    func cancelExport() {
+        exportGeneration = UUID(); exportTask?.cancel(); exportTask = nil
+        exporter?.cancel(); exporter = nil; exportProgress = nil
+    }
+    func clearExportedFile() {
+        if let file = exportedFile { io.async { try? FileManager.default.removeItem(at: file) } }
+        exportedFile = nil
+    }
 }

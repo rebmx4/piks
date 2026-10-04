@@ -92,7 +92,7 @@ struct EditorScreen: View {
                     Button("Отменить экспорт", role: .cancel) { store.cancelExport() }.frame(minHeight: 44)
                 }.presentationDetents([.medium]).interactiveDismissDisabled()
             }
-            .sheet(item: Binding(get: { store.exportedFile.map { ShareableFile(url: $0) } }, set: { if $0 == nil { store.exportedFile = nil } })) { ShareSheet(items: [$0.url]) }
+            .sheet(item: Binding(get: { store.exportedFile.map { ShareableFile(url: $0) } }, set: { if $0 == nil { store.clearExportedFile() } })) { ShareSheet(items: [$0.url]) }
             .alert("Не удалось выполнить действие", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
                 Button("OK") { store.error = nil }
             } message: { Text(store.error ?? "") }
