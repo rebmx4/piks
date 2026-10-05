@@ -41,6 +41,7 @@ workflows:
       xcode: latest
       vars:
         BUNDLE_ID: "com.piks.app.native"
+        HOMEBREW_NO_INSTALL_CLEANUP: "1"
     scripts:
       - name: Native architecture checks
         script: python3 scripts/native/check_structure.py

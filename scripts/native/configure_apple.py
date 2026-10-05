@@ -1,7 +1,6 @@
 """Configure only the new native app's primary Sign in with Apple capability."""
 import http.client
 import json
-import os
 import sys
 import time
 
@@ -12,12 +11,21 @@ SETTINGS = [{"key": "APPLE_ID_AUTH_APP_CONSENT",
 
 def configure(resource_id):
     import jwt  # Already supplied with Codemagic's app-store-connect CLI.
+    from codemagic.tools.app_store_connect.arguments import Types
+
+    # The integration can provide @file: references rather than raw PEM contents.
+    # Resolve credentials with the exact parser used by the working Codemagic CLI.
+    issuer = Types.IssuerIdArgument.from_environment_variable_default()
+    identifier = Types.KeyIdentifierArgument.from_environment_variable_default()
+    private_key = Types.PrivateKeyArgument.from_environment_variable_default()
+    if any(argument is None for argument in (issuer, identifier, private_key)):
+        raise RuntimeError("App Store Connect integration is not configured.")
 
     now = int(time.time())
-    bearer = jwt.encode({"iss": os.environ["APP_STORE_CONNECT_ISSUER_ID"],
+    bearer = jwt.encode({"iss": issuer.value,
                          "iat": now, "exp": now + 300, "aud": "appstoreconnect-v1"},
-                        os.environ["APP_STORE_CONNECT_PRIVATE_KEY"], algorithm="ES256",
-                        headers={"kid": os.environ["APP_STORE_CONNECT_KEY_IDENTIFIER"]})
+                        private_key.value, algorithm="ES256",
+                        headers={"kid": identifier.value})
 
     def request(path, method="GET", body=None):
         # A fixed TLS host prevents credentials following redirects to another server.
