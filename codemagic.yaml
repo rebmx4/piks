@@ -75,7 +75,7 @@ workflows:
             fi
           done
           test -n "$CLI_PYTHON" || { echo "Codemagic CLI Python is unavailable."; exit 1; }
-          "$CLI_PYTHON" scripts/native/configure_apple.py "$NATIVE_ID"
+          "$CLI_PYTHON" -m scripts.native.configure_apple "$NATIVE_ID"
       - name: Fetch signing files for the native app
         script: |
           set -euo pipefail
