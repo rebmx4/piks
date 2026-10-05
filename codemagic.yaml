@@ -30,7 +30,7 @@ workflows:
       - build-native.log
       - build/native-tests.xcresult
   native-testflight:
-    name: APIKS Native — signed IPA and TestFlight
+    name: APIKS Native — TestFlight preview
     max_build_duration: 30
     instance_type: mac_mini_m2
     integrations:
@@ -40,7 +40,7 @@ workflows:
         - piks_signing
       xcode: latest
       vars:
-        BUNDLE_ID: "com.piks.app.native"
+        BUNDLE_ID: "com.piks.app"
         HOMEBREW_NO_INSTALL_CLEANUP: "1"
     scripts:
       - name: Native architecture checks
@@ -49,33 +49,13 @@ workflows:
         script: HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen
       - name: Generate isolated native project
         script: xcodegen generate --spec project-native.yml
-      - name: Register native identifier and Apple sign-in capability
+      - name: Confirm existing APIKS identifier
         script: |
           set -euo pipefail
-          test "$BUNDLE_ID" = "com.piks.app.native"
+          test "$BUNDLE_ID" = "com.piks.app"
           app-store-connect bundle-ids list --bundle-id-identifier "$BUNDLE_ID" \
             --strict-match-identifier --json > native-identifiers.json
-          NATIVE_ID=$(python3 -c 'import json; d=json.load(open("native-identifiers.json")); rows=d if isinstance(d,list) else d.get("data",[d]); print(next((r["id"] for r in rows if r.get("attributes",r).get("identifier")=="com.piks.app.native"),""))')
-          if [ -z "$NATIVE_ID" ]; then
-            app-store-connect bundle-ids create "$BUNDLE_ID" --name "APIKS Native" \
-              --platform IOS --json > native-identifier.json
-            NATIVE_ID=$(python3 -c 'import json; d=json.load(open("native-identifier.json")); print(d.get("data",d)["id"])')
-          fi
-          CLI_BIN=$(command -v app-store-connect)
-          IFS= read -r CLI_SHEBANG < "$CLI_BIN"
-          CLI_INTERPRETER="${CLI_SHEBANG:2}"
-          CLI_PYTHON=
-          for CANDIDATE in "$CLI_INTERPRETER" "$(dirname "$CLI_BIN")/python3" \
-            "$(dirname "$CLI_BIN")/python" "$(command -v python3)"; do
-            if [ -x "$CANDIDATE" ] && "$CANDIDATE" -c \
-              'import jwt; from codemagic.tools.app_store_connect.arguments import Types' \
-              >/dev/null 2>&1; then
-              CLI_PYTHON="$CANDIDATE"
-              break
-            fi
-          done
-          test -n "$CLI_PYTHON" || { echo "Codemagic CLI Python is unavailable."; exit 1; }
-          "$CLI_PYTHON" -m scripts.native.configure_apple "$NATIVE_ID"
+          python3 -c 'import json; d=json.load(open("native-identifiers.json")); rows=d if isinstance(d,list) else d.get("data",[d]); assert any(r.get("attributes",r).get("identifier")=="com.piks.app" for r in rows), "Existing APIKS identifier was not found"'
       - name: Fetch signing files for the native app
         script: |
           set -euo pipefail

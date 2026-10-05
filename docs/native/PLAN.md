@@ -57,15 +57,16 @@ Expected: account never uploads project/media; login cancellation leaves the edi
 
 ### Task 7: Apple/Google provisioning and release configuration
 
-Consumes native app/API; produces separate bundle IDs, App Group, OAuth clients, privacy metadata.
-Use owner's authenticated browser. Configure only free identity services and new native identifiers.
-Expected: current test app IDs/profiles remain unchanged; privacy claims match actual network traffic.
+Consumes native app/API; produces provider configuration, OAuth clients, privacy metadata.
+Use owner's authenticated browser. TestFlight goes to existing APIKS (`com.piks.app`);
+the WebView source branch and earlier builds remain available.
+Expected: no second App Store record; privacy claims match actual network traffic.
 
 ### Task 8: Mac CI, native tests and TestFlight artifact
 
 Consumes Tasks 1–7; produces native-only XcodeGen/Codemagic workflow, XCTest and signed native IPA.
 Run Mac compilation and tests before archive/upload; fix failures within the corresponding task.
-Expected: successful native checks and processed separate TestFlight build, with no publication to App Store.
+Expected: successful native checks and processed TestFlight build in existing APIKS, with no submission to App Review.
 
 ### Task 9: Device validation, Store materials and final review
 

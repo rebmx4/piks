@@ -10,7 +10,7 @@ settings:
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: GR3WB4Z646
     # An installed-app Google client will replace this valid local callback scheme.
-    GOOGLE_REVERSED_CLIENT_ID: "com.piks.app.native.oauth"
+    GOOGLE_REVERSED_CLIENT_ID: "com.piks.app.oauth"
 packages:
   PiksCore:
     path: NativeCore
@@ -23,7 +23,7 @@ targets:
       - path: NativeEngine
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.piks.app.native
+        PRODUCT_BUNDLE_IDENTIFIER: com.piks.app
         PRODUCT_NAME: PiksNative
         INFOPLIST_FILE: NativeApp/Info.plist
         CODE_SIGN_ENTITLEMENTS: NativeApp/NativeApp.entitlements

@@ -18,8 +18,8 @@ for file in (root / "NativeApp").rglob("*"):
 config = (root / "project-native.yml").read_text(encoding="utf-8")
 if re.search(r"path:\s*(App|ShareExtension|web)\s*$", config, re.MULTILINE):
     errors.append("Old test-app or web sources included in the native project")
-if "com.piks.app.native" not in config:
-    errors.append("Native bundle identity is missing")
+if "PRODUCT_BUNDLE_IDENTIFIER: com.piks.app\n" not in config:
+    errors.append("Existing APIKS bundle identity is missing from the native app")
 if errors:
     print("\n".join(errors))
     sys.exit(1)
