@@ -29,6 +29,66 @@ workflows:
     artifacts:
       - build-native.log
       - build/native-tests.xcresult
+  native-testflight:
+    name: APIKS Native — signed IPA and TestFlight
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: konspa
+    environment:
+      groups:
+        - piks_signing
+      xcode: latest
+      vars:
+        BUNDLE_ID: "com.piks.app.native"
+    scripts:
+      - name: Native architecture checks
+        script: python3 scripts/native/check_structure.py
+      - name: Install XcodeGen
+        script: HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen
+      - name: Generate isolated native project
+        script: xcodegen generate --spec project-native.yml
+      - name: Register native identifier and Apple sign-in capability
+        script: |
+          set -euo pipefail
+          test "$BUNDLE_ID" = "com.piks.app.native"
+          app-store-connect bundle-ids list --bundle-id-identifier "$BUNDLE_ID" \
+            --strict-match-identifier --json > native-identifiers.json
+          NATIVE_ID=$(python3 -c 'import json; d=json.load(open("native-identifiers.json")); rows=d if isinstance(d,list) else d.get("data",[d]); print(next((r["id"] for r in rows if r.get("attributes",r).get("identifier")=="com.piks.app.native"),""))')
+          if [ -z "$NATIVE_ID" ]; then
+            app-store-connect bundle-ids create "$BUNDLE_ID" --name "APIKS Native" \
+              --platform IOS --json > native-identifier.json
+            NATIVE_ID=$(python3 -c 'import json; d=json.load(open("native-identifier.json")); print(d.get("data",d)["id"])')
+          fi
+          app-store-connect bundle-ids enable-capabilities "$NATIVE_ID" \
+            --capability "Sign In with Apple"
+      - name: Fetch signing files for the native app
+        script: |
+          set -euo pipefail
+          test -n "${CERTIFICATE_PRIVATE_KEY:-}" || { echo "Signing key is not configured in piks_signing."; exit 1; }
+          SIGNING_KEY=$(mktemp "${TMPDIR:-/tmp}/piks-native-cert.XXXXXX")
+          trap 'rm -f "$SIGNING_KEY"' EXIT
+          chmod 600 "$SIGNING_KEY"
+          printf '%s' "$CERTIFICATE_PRIVATE_KEY" | openssl base64 -A -d -out "$SIGNING_KEY"
+          openssl pkey -in "$SIGNING_KEY" -noout
+          keychain initialize
+          app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE \
+            --certificate-key="@file:$SIGNING_KEY" --create
+          keychain add-certificates
+          xcode-project use-profiles
+      - name: Set native build number
+        script: agvtool new-version -all "$(date +%s)"
+      - name: Build native IPA
+        script: |
+          set -euo pipefail
+          xcode-project build-ipa --project PiksNative.xcodeproj --scheme PiksNative
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
   ios-app-store:
     name: Piks iOS TestFlight
     max_build_duration: 60
