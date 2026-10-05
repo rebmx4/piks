@@ -27,4 +27,24 @@ final class EditorLifecycleTests: XCTestCase {
         XCTAssertNil(store.player.currentItem)
         XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
     }
+
+    func testLatePhotosCompletionCleansOnlyItsOwnedTemporaryCopy() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repo = try ProjectRepository(root: root, owner: nil)
+        let project = Project(name: "Closed picker")
+        try repo.save(project)
+        let source = root.appendingPathComponent("original.mov")
+        try Data([42]).write(to: source)
+        let staged = try ImportStaging.shared.copy(source)
+        let store = EditorStore(project: project, repository: repo)
+        XCTAssertTrue(store.beginPicking())
+        store.close()
+        store.finishPicking([staged], error: nil, lane: 0)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(store.project.assets.isEmpty)
+        XCTAssertNil(store.busy)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staged.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+    }
 }

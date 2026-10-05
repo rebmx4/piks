@@ -52,15 +52,15 @@ struct EditorScreen: View {
                 }
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        tool("Медиа", "plus") { importLane = 0; picker = true }
-                        tool("Файлы", "folder") { importLane = 0; filePicker = true }
+                        tool("Медиа", "plus") { importLane = 0; picker = true }.disabled(store.busy != nil || store.exportProgress != nil)
+                        tool("Файлы", "folder") { importLane = 0; filePicker = true }.disabled(store.busy != nil || store.exportProgress != nil)
                         tool("Формат", "aspectratio") { panel = .canvas }
                         tool("Разрез", "scissors") { if let id = store.selected { store.edit(.split(id, at: store.playhead)) } }.disabled(store.selected == nil)
                         tool("Обрезка", "arrow.left.and.right") { panel = .trim }.disabled(store.selected == nil)
                         tool("Скорость", "speedometer") { panel = .speed }.disabled(store.selected == nil)
                         tool("Звук", "speaker.wave.2") { panel = .audio }.disabled(store.selected == nil)
                         tool("Текст", "textformat") { panel = .text }
-                        tool("Слой", "square.3.layers.3d") { importLane = 1; picker = true }
+                        tool("Слой", "square.3.layers.3d") { importLane = 1; picker = true }.disabled(store.busy != nil || store.exportProgress != nil)
                         tool("Кадр", "crop.rotate") { panel = .transform }.disabled(store.selected == nil)
                         tool("Цвет", "slider.horizontal.3") { panel = .color }.disabled(store.selected == nil)
                         tool("Эффекты", "sparkles") { panel = .effects }.disabled(store.selected == nil)
@@ -75,7 +75,10 @@ struct EditorScreen: View {
                         .accessibilityIdentifier("editor.export")
                 }
             }
-            .sheet(isPresented: $picker) { NativeMediaPicker { files in store.importFiles(files, lane: importLane) } }
+            .sheet(isPresented: $picker) {
+                let lane = importLane
+                NativeMediaPicker(start: store.beginPicking) { files, error in store.finishPicking(files, error: error, lane: lane) }
+            }
             .fileImporter(isPresented: $filePicker, allowedContentTypes: [.movie, .image, .audio], allowsMultipleSelection: true) { result in
                 switch result { case .success(let files): store.importFiles(files, lane: importLane); case .failure(let error): store.error = error.localizedDescription }
             }
@@ -125,9 +128,10 @@ struct ShareSheet: UIViewControllerRepresentable {
 }
 
 struct NativeMediaPicker: UIViewControllerRepresentable {
-    let completion: ([URL]) -> Void
+    let start: () -> Bool
+    let completion: ([URL], String?) -> Void
     @Environment(\.dismiss) private var dismiss
-    func makeCoordinator() -> Coordinator { Coordinator(completion: completion, dismiss: { dismiss() }) }
+    func makeCoordinator() -> Coordinator { Coordinator(start: start, completion: completion, dismiss: { dismiss() }) }
     func makeUIViewController(context: Context) -> PHPickerViewController {
         var config = PHPickerConfiguration(); config.selectionLimit = 20; config.filter = .any(of: [.videos, .images])
         config.preferredAssetRepresentationMode = .current
@@ -135,12 +139,16 @@ struct NativeMediaPicker: UIViewControllerRepresentable {
     }
     func updateUIViewController(_ controller: PHPickerViewController, context: Context) {}
     final class Coordinator: NSObject, PHPickerViewControllerDelegate {
-        let completion: ([URL]) -> Void, dismiss: () -> Void
-        init(completion: @escaping ([URL]) -> Void, dismiss: @escaping () -> Void) { self.completion = completion; self.dismiss = dismiss }
+        let start: () -> Bool
+        let completion: ([URL], String?) -> Void, dismiss: () -> Void
+        init(start: @escaping () -> Bool, completion: @escaping ([URL], String?) -> Void, dismiss: @escaping () -> Void) { self.start = start; self.completion = completion; self.dismiss = dismiss }
         func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
             dismiss()
+            guard !results.isEmpty else { return }
             Task {
+                guard await MainActor.run(body: { start() }) else { return }
                 var files: [URL] = []
+                var failures: [String] = []
                 for result in results {
                     let provider = result.itemProvider
                     let type = provider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) ? UTType.movie.identifier : UTType.image.identifier
@@ -149,16 +157,16 @@ struct NativeMediaPicker: UIViewControllerRepresentable {
                             provider.loadFileRepresentation(forTypeIdentifier: type) { url, error in
                                 do {
                                     guard let url else { throw error ?? EditorError.invalid("Файл из «Фото» недоступен.") }
-                                    let copy = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension(url.pathExtension)
-                                    try FileManager.default.copyItem(at: url, to: copy)
+                                    let copy = try ImportStaging.shared.copy(url)
                                     continuation.resume(returning: copy)
                                 } catch { continuation.resume(throwing: error) }
                             }
                         }
                         files.append(file)
-                    } catch { /* Import errors are reported by the editor in the next pipeline stage. */ }
+                    } catch { failures.append(error.localizedDescription) }
                 }
-                await MainActor.run { completion(files) }
+                let error = failures.first.map { "Не удалось получить файлов: \(failures.count). " + $0 }
+                await MainActor.run { completion(files, error) }
             }
         }
     }

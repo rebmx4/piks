@@ -31,6 +31,7 @@ final class EditorStore: ObservableObject {
     private var previewGeneration = UUID()
     private var activities: [UUID: UIBackgroundTaskIdentifier] = [:]
     private var closed = false
+    private var pendingPicker = false
     private var exportGeneration = UUID()
     private var saveGeneration = UUID()
     var project: Project { history.project }
@@ -51,7 +52,7 @@ final class EditorStore: ObservableObject {
     }
     func close() {
         guard !closed else { return }
-        closed = true; importTask?.cancel(); importTask = nil; busy = nil
+        closed = true; pendingPicker = false; importTask?.cancel(); importTask = nil; busy = nil
         cancelExport(); clearExportedFile()
         player.pause(); isPlaying = false; previewTask?.cancel(); previewGeneration = UUID()
         if let observer { player.removeTimeObserver(observer); self.observer = nil }
@@ -117,12 +118,27 @@ final class EditorStore: ObservableObject {
     private func finishActivity(_ operation: UUID) {
         if let activity = activities.removeValue(forKey: operation), activity != .invalid { UIApplication.shared.endBackgroundTask(activity) }
     }
-    func importFiles(_ files: [URL], lane: Int = 0) {
-        guard !closed, busy == nil, exportProgress == nil, !files.isEmpty else { return }
+    func beginPicking() -> Bool {
+        guard !closed, busy == nil, exportProgress == nil else { return false }
+        pendingPicker = true; busy = "Читаем файлы из «Фото»…"; return true
+    }
+    func finishPicking(_ files: [URL], error: String?, lane: Int) {
+        guard !closed, pendingPicker else { io.async { ImportStaging.shared.remove(files) }; return }
+        pendingPicker = false; busy = nil
+        if let error { self.error = error }
+        importFiles(files, lane: lane, ownedTemporary: true)
+    }
+    func importFiles(_ files: [URL], lane: Int = 0, ownedTemporary: Bool = false) {
+        guard !closed, busy == nil, exportProgress == nil, !files.isEmpty else {
+            if ownedTemporary { io.async { ImportStaging.shared.remove(files) } }; return
+        }
         busy = "Импорт файлов…"
         let id = project.id
         importTask = Task {
-            defer { busy = nil; importTask = nil }
+            defer {
+                busy = nil; importTask = nil
+                if ownedTemporary { io.async { ImportStaging.shared.remove(files) } }
+            }
             for file in files {
                 do {
                     try Task.checkCancellation()
