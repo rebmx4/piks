@@ -61,7 +61,21 @@ workflows:
               --platform IOS --json > native-identifier.json
             NATIVE_ID=$(python3 -c 'import json; d=json.load(open("native-identifier.json")); print(d.get("data",d)["id"])')
           fi
-          python3 scripts/native/configure_apple.py "$NATIVE_ID"
+          CLI_BIN=$(command -v app-store-connect)
+          IFS= read -r CLI_SHEBANG < "$CLI_BIN"
+          CLI_INTERPRETER="${CLI_SHEBANG:2}"
+          CLI_PYTHON=
+          for CANDIDATE in "$CLI_INTERPRETER" "$(dirname "$CLI_BIN")/python3" \
+            "$(dirname "$CLI_BIN")/python" "$(command -v python3)"; do
+            if [ -x "$CANDIDATE" ] && "$CANDIDATE" -c \
+              'import jwt; from codemagic.tools.app_store_connect.arguments import Types' \
+              >/dev/null 2>&1; then
+              CLI_PYTHON="$CANDIDATE"
+              break
+            fi
+          done
+          test -n "$CLI_PYTHON" || { echo "Codemagic CLI Python is unavailable."; exit 1; }
+          "$CLI_PYTHON" scripts/native/configure_apple.py "$NATIVE_ID"
       - name: Fetch signing files for the native app
         script: |
           set -euo pipefail
