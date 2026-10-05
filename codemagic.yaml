@@ -60,8 +60,7 @@ workflows:
               --platform IOS --json > native-identifier.json
             NATIVE_ID=$(python3 -c 'import json; d=json.load(open("native-identifier.json")); print(d.get("data",d)["id"])')
           fi
-          app-store-connect bundle-ids enable-capabilities "$NATIVE_ID" \
-            --capability "Sign In with Apple"
+          python3 scripts/native/configure_apple.py "$NATIVE_ID"
       - name: Fetch signing files for the native app
         script: |
           set -euo pipefail
