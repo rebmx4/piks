@@ -132,9 +132,48 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
             siteGesture.numberOfTouchesRequired = 3
             siteGesture.minimumPressDuration = 1.0
             siteGesture.cancelsTouchesInView = false
+            let menuWasDelayed = siteGesture.delaysTouchesEnded
+            siteGesture.delaysTouchesBegan = false
+            siteGesture.delaysTouchesEnded = false
             siteGesture.delegate = self
             webView.addGestureRecognizer(siteGesture)
+            installInputTrace(siteGesture, menuWasDelayed: menuWasDelayed)
         }
+    }
+
+    // Только TestFlight/Debug и /ryn-next/: наблюдаем UIKit до доставки в JS.
+    // Наблюдатель никогда не распознаёт жест и не задерживает/отменяет касания.
+    private func installInputTrace(_ menu: UIGestureRecognizer, menuWasDelayed: Bool) {
+        let trace = InputTraceRecognizer(target: nil, action: nil)
+        trace.cancelsTouchesInView = false
+        trace.delaysTouchesBegan = false
+        trace.delaysTouchesEnded = false
+        trace.tracingAllowed = { [weak self] in
+            guard let url = self?.webView?.url else { return false }
+            return url.host == nextUrl.host && url.path.hasPrefix(nextUrl.path)
+        }
+        trace.report = { [weak self, weak menu] record in
+            guard let self = self, let web = self.webView else { return }
+            var payload = record
+            payload["os"] = UIDevice.current.systemVersion
+            payload["policy"] = [
+                "menuWasDelayed": menuWasDelayed,
+                "menuDelaysEnd": menu?.delaysTouchesEnded ?? false,
+                "menuState": menu?.state.rawValue ?? -1,
+                "scrollDelay": web.scrollView.delaysContentTouches,
+                "scrollCancel": web.scrollView.canCancelContentTouches,
+                "panState": web.scrollView.panGestureRecognizer.state.rawValue,
+                "navSwipe": web.allowsBackForwardNavigationGestures,
+                "refresh": web.scrollView.refreshControl != nil,
+            ] as [String: Any]
+            guard let data = try? JSONSerialization.data(withJSONObject: payload),
+                  let json = String(data: data, encoding: .utf8) else { return }
+            let js = "window.__ryndiInputTrace && window.__ryndiInputTrace(\(json));"
+            DispatchQueue.main.async { [weak web] in
+                web?.evaluateJavaScript(js, completionHandler: nil)
+            }
+        }
+        webView.addGestureRecognizer(trace)
     }
 
     private func setupProgress() {
