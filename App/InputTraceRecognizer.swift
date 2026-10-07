@@ -7,12 +7,18 @@ final class InputTraceRecognizer: UIGestureRecognizer {
     var tracingAllowed: () -> Bool = { false }
     var report: (([String: Any]) -> Void)?
 
+    private final class ViewRef {
+        weak var value: UIView?
+        init(_ value: UIView?) { self.value = value }
+    }
+
     private struct Entry {
         let id: String
         let at: TimeInterval
         let start: CGPoint
         let wall: Double
         let target: String
+        let originView: ViewRef
         var moves = 0
     }
     private var entries: [ObjectIdentifier: Entry] = [:]
@@ -21,6 +27,8 @@ final class InputTraceRecognizer: UIGestureRecognizer {
     private var windowAt: TimeInterval = 0
     private var starts = 0
     private var limitReported = false
+    // Bound snapshot volume, not input handling: all gestures still proceed.
+    private let captureLimit = 40
 
     override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool { false }
     override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool { false }
@@ -32,7 +40,7 @@ final class InputTraceRecognizer: UIGestureRecognizer {
             let key = ObjectIdentifier(touch)
             active.insert(key)
             guard tracingAllowed() else { continue }
-            guard starts < 60 else {
+            guard starts < captureLimit else {
                 if !limitReported {
                     limitReported = true
                     report?(["id": "ios-limit", "stream": "native", "phase": "limit",
@@ -46,7 +54,8 @@ final class InputTraceRecognizer: UIGestureRecognizer {
             let wall = Date().timeIntervalSince1970 * 1000 - max(0, now - touch.timestamp) * 1000
             let target = touch.view.map { String(describing: type(of: $0)) } ?? ""
             let entry = Entry(id: "ios-\(serial)", at: touch.timestamp, start: p,
-                              wall: wall, target: String(target.prefix(80)))
+                              wall: wall, target: String(target.prefix(80)),
+                              originView: ViewRef(touch.view))
             entries[key] = entry
             var record = base(entry, phase: "start", stamp: touch.timestamp)
             record["route"] = route(from: touch.view)
@@ -73,7 +82,7 @@ final class InputTraceRecognizer: UIGestureRecognizer {
         ["id": entry.id, "stream": "native", "phase": phase, "wall": entry.wall,
          "x": Int(entry.start.x.rounded()), "y": Int(entry.start.y.rounded()),
          "nativeTarget": entry.target,
-         "traceVersion": 2, "observedWall": Date().timeIntervalSince1970 * 1000,
+         "traceVersion": 3, "observedWall": Date().timeIntervalSince1970 * 1000,
          "queue": Int((max(0, ProcessInfo.processInfo.systemUptime - stamp) * 1000).rounded())]
     }
 
@@ -95,7 +104,7 @@ final class InputTraceRecognizer: UIGestureRecognizer {
             ]
             var gestures: [[String: Any]] = []
             for gesture in node.gestureRecognizers ?? [] where gesture !== self {
-                guard gestureCount < 24 else { gesturesTruncated = true; break }
+                guard gestureCount < 64 else { gesturesTruncated = true; break }
                 gestureCount += 1
                 gestures.append([
                     "id": String(describing: ObjectIdentifier(gesture)),
@@ -135,13 +144,14 @@ final class InputTraceRecognizer: UIGestureRecognizer {
             record["dx"] = Int((p.x - entry.start.x).rounded())
             record["dy"] = Int((p.y - entry.start.y).rounded())
             record["ms"] = Int((max(0, touch.timestamp - entry.at) * 1000).rounded())
-            record["route"] = route(from: touch.view)
+            let targetView = touch.view ?? entry.originView.value
+            record["route"] = route(from: targetView)
             report?(record)
             // Отмена может прийти до перехода распознавателя в .began.
             // Один снимок после текущей обработки сохраняет этот переход.
             if phase == "cancel" {
                 let cancelled = record
-                DispatchQueue.main.async { [weak self, weak target = touch.view] in
+                DispatchQueue.main.async { [weak self, weak target = targetView] in
                     guard let self = self, self.tracingAllowed() else { return }
                     var followup = cancelled
                     followup["phase"] = "afterCancel"
