@@ -216,7 +216,9 @@ final class ReverseMediaTests: XCTestCase {
         var times: [CMTime] = []
         while let sample = output.copyNextSampleBuffer() { times.append(CMSampleBufferGetPresentationTimeStamp(sample)) }
         XCTAssertEqual(reader.status, .completed, reader.error?.localizedDescription ?? "")
-        return times
+        // Сжатые пакеты читаются в порядке декодирования, который для HEVC
+        // может отличаться от порядка показа. Проверяем уникальные PTS показа.
+        return times.sorted { CMTimeCompare($0, $1) < 0 }
     }
     func testTrimmedReversePreservesResolutionAndReversesVideoAndStereoAudio() throws {
         let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }

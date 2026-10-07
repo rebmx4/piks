@@ -18,6 +18,10 @@ final class ReverseMedia {
         let message: String
         var errorDescription: String? { message }
     }
+    private struct Frame {
+        let start: CMTime
+        let end: CMTime
+    }
     private let lock = NSLock()
     private var cancelled = false
     private var currentWriter: AVAssetWriter?
@@ -92,6 +96,10 @@ final class ReverseMedia {
         mark("source-format", ["from": from, "duration": duration, "width": width, "height": height, "fps": fps,
                                "sourceCodec": ext.map { CMFormatDescriptionGetMediaSubType($0) } ?? 0,
                                "pixelFormat": pixelFormat, "writerCodec": "hevc", "transfer": transfer])
+        let rangeStart = time(from), rangeEnd = time(from + duration)
+        mark("video-index")
+        let frames = try frameTimes(asset: asset, track: track, from: rangeStart, to: rangeEnd, fps: fps)
+        mark("video-index-ready", ["sourceFrames": frames.count])
         let token = UUID().uuidString
         let dir = destination.deletingLastPathComponent()
         let part = dir.appendingPathComponent("reverse-\(token).part.mp4")
@@ -178,62 +186,62 @@ final class ReverseMedia {
             if !audioDone { writer.cancelWriting(); audioReader?.cancelReading() }
             audioGroup.wait()
         }
-        let end = from + duration
         // Консервативный предел 64 МБ: не зависит от длины исходника.
         let blockFrames = max(1, (64 * 1024 * 1024) / max(1, width * height * 4))
-        let blockSeconds = min(1, Double(blockFrames) / fps)
-        var hi = end, lastSource = Double.infinity, count = 0
+        var upper = frames.count, count = 0
         var lastOutputTime = CMTime.invalid
-        while hi > from + 0.00000001 {
+        while upper > 0 {
             try check()
             try feed.check()
-            let lo = max(from, hi - blockSeconds)
+            let lower = max(0, upper - blockFrames), block = Array(frames[lower..<upper])
+            let lo = block[0].start, hi = block[block.count - 1].end
             try autoreleasepool {
-                mark("video-read", ["blockFrom": lo, "blockTo": hi, "writtenFrames": count])
+                mark("video-read", ["blockFrom": lo.seconds, "blockTo": hi.seconds, "writtenFrames": count])
                 let reader = try AVAssetReader(asset: asset)
-                reader.timeRange = CMTimeRange(start: time(lo), duration: time(hi - lo))
+                // Границы — реальные границы кадров из индекса. Произвольная
+                // граница по секундам резала один кадр на два разных sample,
+                // добавляла дубли и приводила к InvalidTimeStamp (-16364).
+                reader.timeRange = CMTimeRange(start: lo, end: hi)
                 let out = AVAssetReaderTrackOutput(track: track,
                     outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: pixelFormat])
                 out.alwaysCopiesSampleData = false
                 reader.add(out)
                 guard reader.startReading() else { throw reader.error ?? Failure(message: "Кадры видео не читаются") }
                 defer { reader.cancelReading() }
-                var samples: [CMSampleBuffer] = []
+                let wanted = Set(block.map { frameKey($0.start) })
+                var samples: [Int64: CMSampleBuffer] = [:]
                 while let sample = out.copyNextSampleBuffer() {
                     try check()
-                    let t = CMSampleBufferGetPresentationTimeStamp(sample).seconds
-                    if t < hi - 0.00000001 && t < lastSource - 0.00000001 { samples.append(sample) }
+                    let key = frameKey(CMSampleBufferGetPresentationTimeStamp(sample))
+                    if wanted.contains(key), samples[key] == nil { samples[key] = sample }
                 }
                 if reader.status == .failed { throw reader.error ?? Failure(message: "Чтение кадров прервалось") }
-                samples.sort { CMSampleBufferGetPresentationTimeStamp($0) < CMSampleBufferGetPresentationTimeStamp($1) }
                 mark("video-write", ["decodedFrames": samples.count])
-                for sample in samples.reversed() {
+                guard samples.count == block.count else { throw Failure(message: "Декодер не вернул все кадры блока реверсии") }
+                for frame in block.reversed() {
                     try check()
-                    let t = CMSampleBufferGetPresentationTimeStamp(sample).seconds
-                    let rawDuration = CMSampleBufferGetDuration(sample).seconds
-                    let d = rawDuration.isFinite && rawDuration > 0 ? rawDuration : 1 / fps
-                    let a = max(from, t), b = min(end, min(lastSource, t + d))
-                    // Reader обрезает первый/последний кадр каждого блока.
-                    // После вычитания Double на границе бывают остатки меньше
-                    // одного тика: они проходили epsilon, но округлялись в уже
-                    // записанный PTS. Writer падал с InvalidTimeStamp (-16364).
-                    let sourceStart = time(a), sourceEnd = time(b)
+                    let sourceStart = CMTimeCompare(frame.start, rangeStart) < 0 ? rangeStart : frame.start
+                    let sourceEnd = CMTimeCompare(frame.end, rangeEnd) > 0 ? rangeEnd : frame.end
                     guard CMTimeCompare(sourceEnd, sourceStart) > 0,
+                          let sample = samples[frameKey(frame.start)],
                           let pixels = CMSampleBufferGetImageBuffer(sample) else { continue }
-                    let outputTime = CMTimeSubtract(time(end), sourceEnd)
-                    guard !lastOutputTime.isValid || CMTimeCompare(outputTime, lastOutputTime) > 0 else { continue }
-                    mark("video-write", ["sourceTime": t, "sourceDuration": d,
+                    let outputTime = CMTimeSubtract(rangeEnd, sourceEnd)
+                    guard !lastOutputTime.isValid || CMTimeCompare(outputTime, lastOutputTime) > 0 else {
+                        throw Failure(message: "Временные отметки реверсии не возрастают")
+                    }
+                    mark("video-write", ["sourceTime": frame.start.seconds,
+                                         "sourceDuration": CMTimeSubtract(frame.end, frame.start).seconds,
                                          "outputTime": outputTime.seconds,
                                          "previousOutputTime": lastOutputTime.isValid ? lastOutputTime.seconds : -1])
                     try wait(video, writer)
                     guard adaptor.append(pixels, withPresentationTime: outputTime) else {
                         throw writer.error ?? Failure(message: "Обратный кадр не записался")
                     }
-                    lastSource = t; lastOutputTime = outputTime; count += 1
+                    lastOutputTime = outputTime; count += 1
                 }
             }
-            hi = lo
-            progress(0.25 + 0.74 * (end - hi) / duration)
+            upper = lower
+            progress(0.25 + 0.74 * Double(frames.count - upper) / Double(frames.count))
         }
         guard count > 0 else { throw Failure(message: "Выбранный участок не содержит читаемых кадров") }
         video.markAsFinished()
@@ -256,6 +264,48 @@ final class ReverseMedia {
         progress(1)
         return Info(duration: duration, width: Int(abs(size.width)), height: Int(abs(size.height)), fps: fps,
                     transfer: hdr ? (transfer == (kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG as String) ? "hlg" : "pq") : "")
+    }
+
+    private func frameKey(_ at: CMTime) -> Int64 {
+        CMTimeConvertScale(at, timescale: 600000, method: .roundHalfAwayFromZero).value
+    }
+
+    // Только временные отметки и ссылки на сэмплы, без чтения/декодирования
+    // пикселей. Индекс един для всех блоков и сохраняет переменный FPS.
+    private func frameTimes(asset: AVAsset, track: AVAssetTrack, from: CMTime, to end: CMTime,
+                            fps: Double) throws -> [Frame] {
+        let reader = try AVAssetReader(asset: asset), out = AVAssetReaderSampleReferenceOutput(track: track)
+        guard reader.canAdd(out) else { throw Failure(message: "Временные отметки видео недоступны") }
+        reader.add(out)
+        guard reader.startReading() else { throw reader.error ?? Failure(message: "Временные отметки видео не читаются") }
+        defer { reader.cancelReading() }
+        var frames: [Frame] = []
+        while let sample = out.copyNextSampleBuffer() {
+            try check()
+            for index in 0..<CMSampleBufferGetNumSamples(sample) {
+                var timing = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: .invalid, decodeTimeStamp: .invalid)
+                let status = CMSampleBufferGetSampleTimingInfo(sample, at: index, timingInfoOut: &timing)
+                guard status == noErr, timing.presentationTimeStamp.isNumeric else {
+                    throw Failure(message: "Некорректная временная отметка исходного кадра")
+                }
+                let duration = timing.duration.isNumeric && CMTimeCompare(timing.duration, .zero) > 0 ? timing.duration : time(1 / fps)
+                let finish = CMTimeAdd(timing.presentationTimeStamp, duration)
+                if CMTimeCompare(timing.presentationTimeStamp, end) < 0, CMTimeCompare(finish, from) > 0 {
+                    frames.append(Frame(start: timing.presentationTimeStamp, end: finish))
+                }
+            }
+        }
+        if reader.status == .failed { throw reader.error ?? Failure(message: "Временные отметки видео не прочитаны") }
+        frames.sort { CMTimeCompare($0.start, $1.start) < 0 }
+        for index in 0..<max(0, frames.count - 1) {
+            guard CMTimeCompare(frames[index].start, frames[index + 1].start) < 0 else {
+                throw Failure(message: "Исходное видео содержит повторные временные отметки")
+            }
+            if CMTimeCompare(frames[index].end, frames[index + 1].start) > 0 {
+                frames[index] = Frame(start: frames[index].start, end: frames[index + 1].start)
+            }
+        }
+        return frames
     }
 
     private func wait(_ input: AVAssetWriterInput, _ writer: AVAssetWriter) throws {
