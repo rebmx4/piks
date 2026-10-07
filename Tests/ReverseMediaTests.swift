@@ -9,7 +9,10 @@ final class ReverseMediaTests: XCTestCase {
         let deadline = Date().addingTimeInterval(10)
         while !input.isReadyForMoreMediaData && Date() < deadline { Thread.sleep(forTimeInterval: 0.002) }
     }
-    private func fixture(_ dir: URL, sound: Bool = true, width: Int = 320, height: Int = 180, fps: Int32 = 10) throws -> URL {
+    private func fixture(_ dir: URL, sound: Bool = true, width: Int = 320, height: Int = 180,
+                         fps: Int32 = 10, seconds: Int = 2, motion: Bool = false) throws -> URL {
+        let started = Date(), frames = Int(fps) * seconds
+        let duration = CMTime(seconds: Double(seconds), preferredTimescale: 600)
         let videoURL = dir.appendingPathComponent("video.mov")
         let writer = try AVAssetWriter(outputURL: videoURL, fileType: .mov)
         let video = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264,
@@ -22,14 +25,17 @@ final class ReverseMediaTests: XCTestCase {
             kCVPixelBufferWidthKey as String: width, kCVPixelBufferHeightKey as String: height,
             kCVPixelBufferCGImageCompatibilityKey as String: true, kCVPixelBufferCGBitmapContextCompatibilityKey as String: true])
         XCTAssertTrue(writer.startWriting()); writer.startSession(atSourceTime: .zero)
-        func solid(_ color: UInt32) throws -> CVPixelBuffer {
+        func solid(_ color: UInt32, bar: Int? = nil) throws -> CVPixelBuffer {
             var raw: CVPixelBuffer?
             XCTAssertEqual(CVPixelBufferPoolCreatePixelBuffer(nil, adaptor.pixelBufferPool!, &raw), kCVReturnSuccess)
             let pixels = try XCTUnwrap(raw)
             CVPixelBufferLockBaseAddress(pixels, [])
             let base = CVPixelBufferGetBaseAddress(pixels)!
             let stride = CVPixelBufferGetBytesPerRow(pixels)
-            let row = [UInt32](repeating: color, count: width)
+            var row = [UInt32](repeating: color, count: width)
+            if let bar = bar {
+                for x in bar..<min(width, bar + max(1, width / 20)) { row[x] = 0xffffffff }
+            }
             row.withUnsafeBytes { bytes in
                 for y in 0..<height { memcpy(base.advanced(by: y * stride), bytes.baseAddress!, width * 4) }
             }
@@ -37,23 +43,29 @@ final class ReverseMediaTests: XCTestCase {
             return pixels
         }
         let red = try solid(0xffff0000), blue = try solid(0xff0000ff)
-        for k in 0..<Int(fps * 2) {
-            waitForInput(video)
-            XCTAssertTrue(adaptor.append(k < Int(fps) ? red : blue,
-                withPresentationTime: CMTime(value: Int64(k), timescale: fps)))
+        for k in 0..<frames {
+            try autoreleasepool {
+                let pixels = motion ? try solid(k < frames / 2 ? 0xffff0000 : 0xff0000ff,
+                    bar: (k * max(1, width / 37)) % (width - max(1, width / 20))) : (k < frames / 2 ? red : blue)
+                waitForInput(video)
+                XCTAssertTrue(adaptor.append(pixels, withPresentationTime: CMTime(value: Int64(k), timescale: fps)))
+            }
         }
-        video.markAsFinished(); writer.endSession(atSourceTime: CMTime(seconds: 2, preferredTimescale: 600))
+        video.markAsFinished(); writer.endSession(atSourceTime: duration)
         let finished = DispatchSemaphore(value: 0); writer.finishWriting { finished.signal() }
         XCTAssertEqual(finished.wait(timeout: .now() + 20), .success)
         XCTAssertEqual(writer.status, .completed, writer.error?.localizedDescription ?? "")
+        print("reverse fixture: video \(width)x\(height), \(seconds)s, \(Date().timeIntervalSince(started))s")
         if !sound { return videoURL }
         let audioURL = dir.appendingPathComponent("sound.caf")
         let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 2, interleaved: false)!
         do {
             let file = try AVAudioFile(forWriting: audioURL, settings: format.settings)
-            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 96000)!; buffer.frameLength = 96000
-            for k in 0..<96000 {
-                let t = Double(k) / 48000, hz = k < 48000 ? 400.0 : 900.0
+            let count = seconds * 48000
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count))!
+            buffer.frameLength = AVAudioFrameCount(count)
+            for k in 0..<count {
+                let t = Double(k) / 48000, hz = k < count / 2 ? 400.0 : 900.0
                 let v = Float(sin(2 * .pi * hz * t))
                 buffer.floatChannelData![0][k] = v * 0.4; buffer.floatChannelData![1][k] = v * 0.08
             }
@@ -63,18 +75,20 @@ final class ReverseMediaTests: XCTestCase {
         let composition = AVMutableComposition()
         let vt = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)!
         let original = vAsset.tracks(withMediaType: .video)[0]
-        try vt.insertTimeRange(CMTimeRange(start: .zero, duration: CMTime(seconds: 2, preferredTimescale: 600)), of: original, at: .zero)
+        try vt.insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: original, at: .zero)
         vt.preferredTransform = original.preferredTransform
         let at = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)!
-        try at.insertTimeRange(CMTimeRange(start: .zero, duration: CMTime(seconds: 2, preferredTimescale: 600)),
+        try at.insertTimeRange(CMTimeRange(start: .zero, duration: duration),
                                of: aAsset.tracks(withMediaType: .audio)[0], at: .zero)
         let result = dir.appendingPathComponent("source.mp4")
         let preset = width >= 1920 ? AVAssetExportPreset1920x1080 : AVAssetExportPresetHighestQuality
         let export = try XCTUnwrap(AVAssetExportSession(asset: composition, presetName: preset))
         export.outputURL = result; export.outputFileType = .mp4
+        export.shouldOptimizeForNetworkUse = true
         let exported = DispatchSemaphore(value: 0); export.exportAsynchronously { exported.signal() }
         XCTAssertEqual(exported.wait(timeout: .now() + 30), .success)
         XCTAssertEqual(export.status, .completed, export.error?.localizedDescription ?? "")
+        print("reverse fixture: AAC proxy exported, \(Date().timeIntervalSince(started))s")
         return result
     }
     private func directory() throws -> URL {
@@ -154,6 +168,41 @@ final class ReverseMediaTests: XCTestCase {
         XCTAssertGreaterThan(power(early[0], hz: 900), power(early[0], hz: 400) * 4)
         XCTAssertGreaterThan(power(late[0], hz: 400), power(late[0], hz: 900) * 4)
         XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: source.path)[.size] as? NSNumber, originalSize)
+    }
+    func test15SecondMovingAACProxyFullAndTrimmedReverse() throws {
+        let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        // Та же конфигурация MP4-копии, что у PreviewCopies: 1080p, AAC,
+        // optimizeForNetworkUse. Движение и длинный звук пересекают много блоков.
+        let source = try fixture(dir, width: 1920, height: 1080, fps: 30, seconds: 15, motion: true)
+        let asset = AVURLAsset(url: source)
+        let inputSize = try FileManager.default.attributesOfItem(atPath: source.path)[.size] as? NSNumber
+        let track = try XCTUnwrap(asset.tracks(withMediaType: .video).first)
+        XCTAssertEqual(track.naturalSize, CGSize(width: 1920, height: 1080))
+        let audioTrack = try XCTUnwrap(asset.tracks(withMediaType: .audio).first)
+        let description = try XCTUnwrap(audioTrack.formatDescriptions.first) as! CMAudioFormatDescription
+        let format = try XCTUnwrap(CMAudioFormatDescriptionGetStreamBasicDescription(description))
+        XCTAssertEqual(format.pointee.mFormatID, kAudioFormatMPEG4AAC)
+        XCTAssertEqual(format.pointee.mSampleRate, 48000)
+        XCTAssertEqual(format.pointee.mChannelsPerFrame, 2)
+        for (index, range) in [(0.0, 15.0), (0.6, 13.7)].enumerated() {
+            let destination = dir.appendingPathComponent("long-\(index).mp4"), engine = ReverseMedia(), started = Date()
+            let info: ReverseMedia.Info
+            do { info = try engine.run(source: source, destination: destination, from: range.0,
+                                      duration: range.1, progress: { _ in }) }
+            catch { XCTFail("15s AAC reverse: \(engine.failureDetails(error))"); throw error }
+            print("reverse long: from \(range.0), duration \(range.1), \(Date().timeIntervalSince(started))s")
+            XCTAssertLessThan(Date().timeIntervalSince(started), 60)
+            XCTAssertEqual(info.width, 1080); XCTAssertEqual(info.height, 1920)
+            XCTAssertEqual(AVURLAsset(url: destination).duration.seconds, range.1, accuracy: 0.05)
+            let first = try color(destination, at: 0.12), last = try color(destination, at: range.1 - 0.12)
+            XCTAssertGreaterThan(first[2], 180); XCTAssertGreaterThan(last[0], 180)
+            let early = try audio(destination, from: 0.12), late = try audio(destination, from: range.1 - 0.32)
+            XCTAssertGreaterThan(power(early[0], hz: 900), power(early[0], hz: 400) * 4)
+            XCTAssertGreaterThan(power(late[0], hz: 400), power(late[0], hz: 900) * 4)
+            let left = early[0].reduce(0.0) { $0 + Double($1 * $1) }, right = early[1].reduce(0.0) { $0 + Double($1 * $1) }
+            XCTAssertGreaterThan(left, right * 3)
+        }
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: source.path)[.size] as? NSNumber, inputSize)
     }
     func testTrimmedReversePreservesResolutionAndReversesVideoAndStereoAudio() throws {
         let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
