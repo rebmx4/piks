@@ -58,7 +58,8 @@ workflows:
           keychain add-certificates
           echo "===== Applying profiles to project ====="
           xcode-project use-profiles --verbose
-      - name: Test video and audio reversal
+      - &reverse_tests
+        name: Test video and audio reversal
         script: |
           set -e
           cd "$CM_BUILD_DIR"
@@ -105,3 +106,21 @@ workflows:
         notify:
           success: true
           failure: true
+
+  ios-native-tests:
+    name: Piks native tests (no IPA or publishing)
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+    environment:
+      xcode: latest
+    scripts:
+      - name: Install XcodeGen
+        script: HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen
+      - name: Generate Xcode project
+        script: |
+          cd "$CM_BUILD_DIR"
+          xcodegen generate
+      - *reverse_tests
+    artifacts:
+      - build/reverse-tests/test.log
+      - build/reverse-tests/ReverseTests.xcresult
