@@ -183,6 +183,7 @@ final class ReverseMedia {
         let blockFrames = max(1, (64 * 1024 * 1024) / max(1, width * height * 4))
         let blockSeconds = min(1, Double(blockFrames) / fps)
         var hi = end, lastSource = Double.infinity, count = 0
+        var lastOutputTime = CMTime.invalid
         while hi > from + 0.00000001 {
             try check()
             try feed.check()
@@ -212,13 +213,23 @@ final class ReverseMedia {
                     let rawDuration = CMSampleBufferGetDuration(sample).seconds
                     let d = rawDuration.isFinite && rawDuration > 0 ? rawDuration : 1 / fps
                     let a = max(from, t), b = min(end, min(lastSource, t + d))
-                    guard b > a + 0.00000001, let pixels = CMSampleBufferGetImageBuffer(sample) else { continue }
-                    let at = max(0, end - b)
+                    // Reader обрезает первый/последний кадр каждого блока.
+                    // После вычитания Double на границе бывают остатки меньше
+                    // одного тика: они проходили epsilon, но округлялись в уже
+                    // записанный PTS. Writer падал с InvalidTimeStamp (-16364).
+                    let sourceStart = time(a), sourceEnd = time(b)
+                    guard CMTimeCompare(sourceEnd, sourceStart) > 0,
+                          let pixels = CMSampleBufferGetImageBuffer(sample) else { continue }
+                    let outputTime = CMTimeSubtract(time(end), sourceEnd)
+                    guard !lastOutputTime.isValid || CMTimeCompare(outputTime, lastOutputTime) > 0 else { continue }
+                    mark("video-write", ["sourceTime": t, "sourceDuration": d,
+                                         "outputTime": outputTime.seconds,
+                                         "previousOutputTime": lastOutputTime.isValid ? lastOutputTime.seconds : -1])
                     try wait(video, writer)
-                    guard adaptor.append(pixels, withPresentationTime: time(at)) else {
+                    guard adaptor.append(pixels, withPresentationTime: outputTime) else {
                         throw writer.error ?? Failure(message: "Обратный кадр не записался")
                     }
-                    lastSource = t; count += 1
+                    lastSource = t; lastOutputTime = outputTime; count += 1
                 }
             }
             hi = lo

@@ -182,7 +182,7 @@ final class ReverseMediaTests: XCTestCase {
         let description = try XCTUnwrap(audioTrack.formatDescriptions.first) as! CMAudioFormatDescription
         let format = try XCTUnwrap(CMAudioFormatDescriptionGetStreamBasicDescription(description))
         XCTAssertEqual(format.pointee.mFormatID, kAudioFormatMPEG4AAC)
-        XCTAssertEqual(format.pointee.mSampleRate, 48000)
+        XCTAssertTrue([44100.0, 48000.0].contains(format.pointee.mSampleRate), "1080p-предустановка может пересчитать звук в 44,1 кГц")
         XCTAssertEqual(format.pointee.mChannelsPerFrame, 2)
         for (index, range) in [(0.0, 15.0), (0.6, 13.7)].enumerated() {
             let destination = dir.appendingPathComponent("long-\(index).mp4"), engine = ReverseMedia(), started = Date()
@@ -194,6 +194,10 @@ final class ReverseMediaTests: XCTestCase {
             XCTAssertLessThan(Date().timeIntervalSince(started), 60)
             XCTAssertEqual(info.width, 1080); XCTAssertEqual(info.height, 1920)
             XCTAssertEqual(AVURLAsset(url: destination).duration.seconds, range.1, accuracy: 0.05)
+            let written = try videoTimes(destination)
+            XCTAssertEqual(written.count, Int((range.1 * 30).rounded()), "ни один видеокадр не должен потеряться или дублироваться на границе блока")
+            XCTAssertTrue(zip(written, written.dropFirst()).allSatisfy { pair in CMTimeCompare(pair.0, pair.1) < 0 },
+                          "временные отметки видео должны строго возрастать")
             let first = try color(destination, at: 0.12), last = try color(destination, at: range.1 - 0.12)
             XCTAssertGreaterThan(first[2], 180); XCTAssertGreaterThan(last[0], 180)
             let early = try audio(destination, from: 0.12), late = try audio(destination, from: range.1 - 0.32)
@@ -203,6 +207,16 @@ final class ReverseMediaTests: XCTestCase {
             XCTAssertGreaterThan(left, right * 3)
         }
         XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: source.path)[.size] as? NSNumber, inputSize)
+    }
+    private func videoTimes(_ url: URL) throws -> [CMTime] {
+        let asset = AVURLAsset(url: url), reader = try AVAssetReader(asset: asset)
+        let track = try XCTUnwrap(asset.tracks(withMediaType: .video).first)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+        reader.add(output); XCTAssertTrue(reader.startReading())
+        var times: [CMTime] = []
+        while let sample = output.copyNextSampleBuffer() { times.append(CMSampleBufferGetPresentationTimeStamp(sample)) }
+        XCTAssertEqual(reader.status, .completed, reader.error?.localizedDescription ?? "")
+        return times
     }
     func testTrimmedReversePreservesResolutionAndReversesVideoAndStereoAudio() throws {
         let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
