@@ -180,7 +180,9 @@ final class ReverseMediaTests: XCTestCase {
         sourceAttachment.lifetime = .keepAlways; add(sourceAttachment)
         let inputSize = try FileManager.default.attributesOfItem(atPath: source.path)[.size] as? NSNumber
         let track = try XCTUnwrap(asset.tracks(withMediaType: .video).first)
-        XCTAssertEqual(track.naturalSize, CGSize(width: 1920, height: 1080))
+        let displayedSize = track.naturalSize.applying(track.preferredTransform)
+        XCTAssertEqual(abs(displayedSize.width), 1080)
+        XCTAssertEqual(abs(displayedSize.height), 1920)
         let audioTrack = try XCTUnwrap(asset.tracks(withMediaType: .audio).first)
         let description = try XCTUnwrap(audioTrack.formatDescriptions.first) as! CMAudioFormatDescription
         let format = try XCTUnwrap(CMAudioFormatDescriptionGetStreamBasicDescription(description))
@@ -194,6 +196,8 @@ final class ReverseMediaTests: XCTestCase {
                                       duration: range.1, progress: { _ in }) }
             catch { XCTFail("15s AAC reverse: \(engine.failureDetails(error))"); throw error }
             print("reverse long: from \(range.0), duration \(range.1), \(Date().timeIntervalSince(started))s")
+            let details = engine.diagnostics
+            print("reverse sample counts: indexed \(details["sourceFrames"] ?? -1), written \(details["writtenFrames"] ?? -1), first \(details["firstFrame"] ?? -1), last \(details["lastFrame"] ?? -1)")
             #if targetEnvironment(simulator)
             // Simulator использует другой путь кодирования. Аппаратную скорость
             // проверяет этот же тест на Mac, затем конкретный iPhone владельца.

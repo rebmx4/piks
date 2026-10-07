@@ -64,8 +64,12 @@ final class ReverseMedia {
         return errors
     }
 
+    var diagnostics: [String: Any] {
+        lock.lock(); defer { lock.unlock() }; return context
+    }
+
     func failureDetails(_ error: Error) -> [String: Any] {
-        lock.lock(); var details = context; lock.unlock()
+        var details = diagnostics
         details["errors"] = Self.errorChain(error)
         return details
     }
@@ -99,7 +103,9 @@ final class ReverseMedia {
         let rangeStart = time(from), rangeEnd = time(from + duration)
         mark("video-index")
         let frames = try frameTimes(asset: asset, track: track, from: rangeStart, to: rangeEnd, fps: fps)
-        mark("video-index-ready", ["sourceFrames": frames.count])
+        mark("video-index-ready", ["sourceFrames": frames.count,
+             "firstFrame": frames.first?.start.seconds ?? -1,
+             "lastFrame": frames.last?.start.seconds ?? -1])
         let token = UUID().uuidString
         let dir = destination.deletingLastPathComponent()
         let part = dir.appendingPathComponent("reverse-\(token).part.mp4")
@@ -282,16 +288,28 @@ final class ReverseMedia {
         var frames: [Frame] = []
         while let sample = out.copyNextSampleBuffer() {
             try check()
+            let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false) as? [[String: Any]]
+            let rawStart = CMSampleBufferGetPresentationTimeStamp(sample)
+            let displayedStart = CMSampleBufferGetOutputPresentationTimeStamp(sample)
+            let shift = CMTimeSubtract(displayedStart, rawStart)
             for index in 0..<CMSampleBufferGetNumSamples(sample) {
+                if let attachments = attachments, index < attachments.count,
+                   attachments[index][kCMSampleAttachmentKey_DoNotDisplay as String] as? Bool == true { continue }
                 var timing = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: .invalid, decodeTimeStamp: .invalid)
                 let status = CMSampleBufferGetSampleTimingInfo(sample, at: index, timingInfoOut: &timing)
                 guard status == noErr, timing.presentationTimeStamp.isNumeric else {
                     throw Failure(message: "Некорректная временная отметка исходного кадра")
                 }
-                let duration = timing.duration.isNumeric && CMTimeCompare(timing.duration, .zero) > 0 ? timing.duration : time(1 / fps)
-                let finish = CMTimeAdd(timing.presentationTimeStamp, duration)
-                if CMTimeCompare(timing.presentationTimeStamp, end) < 0, CMTimeCompare(finish, from) > 0 {
-                    frames.append(Frame(start: timing.presentationTimeStamp, end: finish))
+                // У MP4 с edit list исходный PTS может отличаться от времени
+                // показа. Декодер работает во времени показа; индекс должен
+                // использовать ту же систему, иначе теряется крайний кадр.
+                let start = CMTimeAdd(timing.presentationTimeStamp, shift)
+                let outputDuration = CMSampleBufferGetOutputDuration(sample)
+                let mappedDuration = CMSampleBufferGetNumSamples(sample) == 1 ? outputDuration : timing.duration
+                let duration = mappedDuration.isNumeric && CMTimeCompare(mappedDuration, .zero) > 0 ? mappedDuration : time(1 / fps)
+                let finish = CMTimeAdd(start, duration)
+                if CMTimeCompare(start, end) < 0, CMTimeCompare(finish, from) > 0 {
+                    frames.append(Frame(start: start, end: finish))
                 }
             }
         }
