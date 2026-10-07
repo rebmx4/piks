@@ -65,6 +65,19 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         CODE_SIGNING_ALLOWED: NO
 
+  ReverseMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "12.0"
+    sources:
+      - path: Tests/ReverseMediaTests.swift
+      - path: App/ReverseMedia.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.piks.reverse.mac.tests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+
 schemes:
   ReverseTests:
     build:
@@ -73,3 +86,10 @@ schemes:
     test:
       targets:
         - ReverseTests
+  ReverseMacTests:
+    build:
+      targets:
+        ReverseMacTests: all
+    test:
+      targets:
+        - ReverseMacTests
