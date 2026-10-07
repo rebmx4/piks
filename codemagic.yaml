@@ -58,6 +58,22 @@ workflows:
           keychain add-certificates
           echo "===== Applying profiles to project ====="
           xcode-project use-profiles --verbose
+      - name: Test video and audio reversal
+        script: |
+          set -e
+          cd "$CM_BUILD_DIR"
+          mkdir -p build/reverse-tests
+          xcrun simctl list devices available -j > build/reverse-tests/devices.json
+          SIM_ID=$(python3 -c 'import json; d=json.load(open("build/reverse-tests/devices.json")); print(next(x["udid"] for r, a in d["devices"].items() if "iOS" in r for x in a if "iPhone" in x["name"]))')
+          xcodebuild test -project Piks.xcodeproj -scheme ReverseTests \
+            -destination "platform=iOS Simulator,id=$SIM_ID" \
+            -derivedDataPath build/reverse-tests/derived \
+            -resultBundlePath build/reverse-tests/ReverseTests.xcresult \
+            CODE_SIGNING_ALLOWED=NO > build/reverse-tests/test.log 2>&1 || {
+              tail -n 90 build/reverse-tests/test.log
+              exit 1
+            }
+          tail -n 12 build/reverse-tests/test.log
       - name: Set build number
         script: |
           cd "$CM_BUILD_DIR"
@@ -77,6 +93,8 @@ workflows:
     artifacts:
       - build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
+      - build/reverse-tests/test.log
+      - build/reverse-tests/ReverseTests.xcresult
     publishing:
       app_store_connect:
         auth: integration

@@ -38,6 +38,7 @@ final class MediaBridge: NSObject {
     private var lastExport: URL?                    // последний готовый файл — для «Поделиться»
     let previews = PreviewCopies()                  // копии роликов для просмотра (сборка №18, MediaPreview.swift)
     var playback: NativePlayback?                   // нативное превью (сборка №23, NativePlayback.swift)
+    var reverser: (req: String, engine: ReverseMedia)? // реверсия выбранного фрагмента (MediaReverse.swift)
 
     // Что умеет эта сборка. Страница читает это до загрузки своих модулей
     // и решает, звать ли нативный экспорт. Старая сборка этого не пишет —
@@ -69,7 +70,7 @@ final class MediaBridge: NSObject {
         let build = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? ""
         var caps = ["pick", "export", "photos", "share", "wave", "audio", "ramps", "read", "adjust", "gallery",
                     "speed", "crop", "mask", "overlap", "cifilter", "stills", "files", "photo", "live", "haptic",
-                    "mic", "vision", "preview", "stereo", "inbox", "keep", "cache", "play"]
+                    "mic", "vision", "preview", "stereo", "inbox", "keep", "cache", "play", "reverse"]
         if canChooseSite { caps.insert("site", at: 4) }
         if #available(iOS 17.0, *) { caps.append("subject") }
         let list = caps.map { "'" + $0 + "'" }.joined(separator: ", ")
@@ -109,7 +110,7 @@ final class MediaBridge: NSObject {
     func markStopped(_ key: ObjectIdentifier) { stopped.insert(key) }
     // Идёт экспорт телефоном — копии для просмотра ждут (MediaPreview.swift):
     // кодировщик у них общий.
-    var exportRunning: Bool { exporter != nil || export != nil }
+    var exportRunning: Bool { exporter != nil || export != nil || reverser != nil }
     func unmarkStopped(_ key: ObjectIdentifier) { stopped.remove(key) }
     func isStopped(_ key: ObjectIdentifier) -> Bool { stopped.contains(key) }
 
@@ -139,6 +140,8 @@ final class MediaBridge: NSObject {
         case "vision-cancel": visionCancel(body)
         case "preview":        previews.request(body["id"] as? String, force: (body["force"] as? Bool) ?? false)
         case "preview-cancel": previews.cancel(body["id"] as? String)
+        case "reverse":        reverseCommand(body)
+        case "reverse-cancel": cancelReverse(body["req"] as? String)
         case "inbox":          takeInbox(body)
         case "keep":           keep(body["id"] as? String)
         case "keep-drop":      keepDrop((body["ids"] as? [String]) ?? [])
@@ -160,7 +163,7 @@ final class MediaBridge: NSObject {
 
     private func startExport(_ text: String?, job: String?) {
         let job = job ?? "job"
-        if exporter != nil {
+        if exporter != nil || reverser != nil {
             send(["event": "export-error", "job": job, "reason": "экспорт уже идёт"])
             return
         }

@@ -52,3 +52,24 @@ targets:
         DEVELOPMENT_TEAM: GR3WB4Z646
         CODE_SIGN_STYLE: Manual
         SKIP_INSTALL: YES
+
+  ReverseTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests/ReverseMediaTests.swift
+      - path: App/ReverseMedia.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.piks.reverse.tests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+
+schemes:
+  ReverseTests:
+    build:
+      targets:
+        ReverseTests: all
+    test:
+      targets:
+        - ReverseTests
