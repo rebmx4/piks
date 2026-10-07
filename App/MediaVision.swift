@@ -49,8 +49,9 @@ extension MediaBridge {
                 self.send(["event": "vision-error", "req": req, "reason": "ролик не найден"])
                 return
             }
+            let source = PreviewCopies.ready(media) ?? url
             MediaBridge.visionQueue.async {
-                self.personMasks(req: req, url: url, fps: fps, from: from, to: to, long: long, accurate: accurate)
+                self.personMasks(req: req, url: source, fps: fps, from: from, to: to, long: long, accurate: accurate)
             }
         }
     }

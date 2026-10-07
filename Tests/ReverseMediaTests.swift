@@ -13,7 +13,8 @@ final class ReverseMediaTests: XCTestCase {
         let videoURL = dir.appendingPathComponent("video.mov")
         let writer = try AVAssetWriter(outputURL: videoURL, fileType: .mov)
         let video = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: 320, AVVideoHeightKey: 180])
+            AVVideoWidthKey: 320, AVVideoHeightKey: 180,
+            AVVideoCompressionPropertiesKey: [AVVideoAllowFrameReorderingKey: false]])
         video.transform = CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: 180, ty: 0)
         writer.add(video)
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: video, sourcePixelBufferAttributes: [
@@ -116,7 +117,9 @@ final class ReverseMediaTests: XCTestCase {
         let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
         let source = try fixture(dir), destination = dir.appendingPathComponent("reversed.mp4")
         let originalSize = try FileManager.default.attributesOfItem(atPath: source.path)[.size] as? NSNumber
+        let started = Date()
         let info = try ReverseMedia().run(source: source, destination: destination, from: 0.5, duration: 1, progress: { _ in })
+        XCTAssertLessThan(Date().timeIntervalSince(started), 25, "короткий реверс со звуком не должен ждать таймаут кодировщика")
         XCTAssertEqual(info.duration, 1)
         let originalTrack = AVURLAsset(url: source).tracks(withMediaType: .video)[0]
         let originalDimensions = originalTrack.naturalSize.applying(originalTrack.preferredTransform)

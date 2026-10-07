@@ -11,11 +11,11 @@ extension MediaBridge {
         }
         let engine = ReverseMedia()
         reverser = (req, engine)
-        previews.pause(); UIApplication.shared.isIdleTimerDisabled = true
-        resolveFile(media) { [weak self] url in
+        UIApplication.shared.isIdleTimerDisabled = true
+        let start: (URL?) -> Void = { [weak self] url in
             guard let self = self, self.reverser?.req == req else { return }
             guard let url = url, !engine.isCancelled else {
-                self.finishReverse(req, error: "Исходный ролик не найден", cancelled: engine.isCancelled); return
+                self.finishReverse(req, error: (body["preview"] as? Bool == true ? "Лёгкая копия ещё не готова — повторите реверсию после подготовки" : "Исходный ролик не найден"), cancelled: engine.isCancelled); return
             }
             let destination = MediaBridge.userDir.appendingPathComponent(id + ".mp4")
             var value = 0.0
@@ -50,6 +50,13 @@ extension MediaBridge {
                     }
                 }
             }
+        }
+        // Номер preview-URL тот же, что у оригинала; resolveFile(media)
+        // всегда находил 4К. Источник теперь выбирается явно по назначению.
+        previews.pause { [weak self] in
+            guard let self = self else { return }
+            if body["preview"] as? Bool == true { start(PreviewCopies.ready(media)) }
+            else { self.resolveFile(media, done: start) }
         }
     }
 

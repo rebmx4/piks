@@ -21,6 +21,12 @@ final class ReverseMedia {
     private let lock = NSLock()
     private var cancelled = false
     private var currentWriter: AVAssetWriter?
+    private final class AudioFeed {
+        private let lock = NSLock()
+        private var failure: Error?
+        func fail(_ error: Error) { lock.lock(); failure = error; lock.unlock() }
+        func check() throws { lock.lock(); let error = failure; lock.unlock(); if let error = error { throw error } }
+    }
 
     func cancel() {
         lock.lock(); cancelled = true; let w = currentWriter; lock.unlock()
@@ -105,14 +111,29 @@ final class ReverseMedia {
         defer { audioReader?.cancelReading() }
         guard writer.startWriting() else { throw writer.error ?? Failure(message: "Кодировщик реверсии не запустился") }
         writer.startSession(atSourceTime: .zero)
-        var nextAudio = audioOutput?.copyNextSampleBuffer()
-        func appendAudio(through seconds: Double) throws {
-            guard let sound = audio else { return }
-            while let sample = nextAudio, CMSampleBufferGetPresentationTimeStamp(sample).seconds <= seconds {
-                try wait(sound, writer)
-                guard sound.append(sample) else { throw writer.error ?? Failure(message: "Обратный звук не записался") }
-                nextAudio = audioOutput?.copyNextSampleBuffer()
+        // Две независимые подачи: writer может ждать звук, пока видеовход
+        // не готов, и наоборот. Последовательная подача стопорила оба входа.
+        let audioGroup = DispatchGroup(), feed = AudioFeed()
+        if let sound = audio, let out = audioOutput, let reader = audioReader {
+            audioGroup.enter()
+            DispatchQueue(label: "ryndi.reverse.audio", qos: .userInitiated).async {
+                defer { audioGroup.leave() }
+                do {
+                    while let sample = out.copyNextSampleBuffer() {
+                        try autoreleasepool {
+                            try self.wait(sound, writer)
+                            guard sound.append(sample) else { throw writer.error ?? Failure(message: "Обратный звук не записался") }
+                        }
+                    }
+                    if reader.status == .failed { throw reader.error ?? Failure(message: "Обратный звук не прочитан") }
+                    sound.markAsFinished()
+                } catch { feed.fail(error); writer.cancelWriting() }
             }
+        }
+        var audioDone = false
+        defer {
+            if !audioDone { writer.cancelWriting(); audioReader?.cancelReading() }
+            audioGroup.wait()
         }
         let end = from + duration
         // Консервативный предел 64 МБ: не зависит от длины исходника.
@@ -121,6 +142,7 @@ final class ReverseMedia {
         var hi = end, lastSource = Double.infinity, count = 0
         while hi > from + 0.00000001 {
             try check()
+            try feed.check()
             let lo = max(from, hi - blockSeconds)
             try autoreleasepool {
                 let reader = try AVAssetReader(asset: asset)
@@ -147,7 +169,6 @@ final class ReverseMedia {
                     let a = max(from, t), b = min(end, min(lastSource, t + d))
                     guard b > a + 0.00000001, let pixels = CMSampleBufferGetImageBuffer(sample) else { continue }
                     let at = max(0, end - b)
-                    try appendAudio(through: at)
                     try wait(video, writer)
                     guard adaptor.append(pixels, withPresentationTime: time(at)) else {
                         throw writer.error ?? Failure(message: "Обратный кадр не записался")
@@ -160,9 +181,8 @@ final class ReverseMedia {
         }
         guard count > 0 else { throw Failure(message: "Выбранный участок не содержит читаемых кадров") }
         video.markAsFinished()
-        try appendAudio(through: .infinity)
-        if audioReader?.status == .failed { throw audioReader?.error ?? Failure(message: "Обратный звук не прочитан") }
-        audio?.markAsFinished()
+        while audioGroup.wait(timeout: .now() + 0.1) == .timedOut { try check(); try feed.check() }
+        audioDone = true; try feed.check()
         writer.endSession(atSourceTime: time(duration))
         let finished = DispatchSemaphore(value: 0)
         writer.finishWriting { finished.signal() }

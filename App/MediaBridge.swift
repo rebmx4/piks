@@ -70,7 +70,7 @@ final class MediaBridge: NSObject {
         let build = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? ""
         var caps = ["pick", "export", "photos", "share", "wave", "audio", "ramps", "read", "adjust", "gallery",
                     "speed", "crop", "mask", "overlap", "cifilter", "stills", "files", "photo", "live", "haptic",
-                    "mic", "vision", "preview", "stereo", "inbox", "keep", "cache", "play", "reverse"]
+                    "mic", "vision", "preview", "stereo", "inbox", "keep", "cache", "play", "reverse", "reverse-proxy"]
         if canChooseSite { caps.insert("site", at: 4) }
         if #available(iOS 17.0, *) { caps.append("subject") }
         let list = caps.map { "'" + $0 + "'" }.joined(separator: ", ")

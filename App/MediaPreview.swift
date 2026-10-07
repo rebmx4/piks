@@ -38,6 +38,7 @@ final class PreviewCopies {
     private var resolving: String?                     // ищем файл ролика (current ещё нет)
     private var current: (id: String, session: AVAssetExportSession, timer: Timer, part: URL)?
     private var cancelling = false                     // current отменяется
+    private var pauseWaiters: [() -> Void] = []
     private var used = Set<String>()                   // нужны в этом запуске — не удалять
     private var retries: [String: Int] = [:]           // сколько раз копию прерывала система
 
@@ -144,7 +145,11 @@ final class PreviewCopies {
 
     // Экспорт телефоном начинается — идущая копия уступает кодировщик и
     // встаёт в начало очереди; кончился — очередь идёт дальше (MediaBridge).
-    func pause() {
+    func pause(completion: (() -> Void)? = nil) {
+        if let completion = completion {
+            if current == nil { completion(); return }
+            pauseWaiters.append(completion)
+        }
         guard let cur = current, !cancelling else { return }
         requeue(cur.id)                      // ветка .cancelled увидит id в очереди — без «отменено»
         cancelling = true
@@ -264,6 +269,9 @@ final class PreviewCopies {
                         self.fail(id, session.error?.localizedDescription ?? "копия не вышла")
                     }
                 }
+                let waiting = self.pauseWaiters
+                self.pauseWaiters.removeAll()
+                for callback in waiting { callback() }
                 self.next()
             }
         }
