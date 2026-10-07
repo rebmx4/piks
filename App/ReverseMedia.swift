@@ -21,6 +21,7 @@ final class ReverseMedia {
     private let lock = NSLock()
     private var cancelled = false
     private var currentWriter: AVAssetWriter?
+    private var context: [String: Any] = ["phase": "not-started"]
     private final class AudioFeed {
         private let lock = NSLock()
         private var failure: Error?
@@ -38,8 +39,41 @@ final class ReverseMedia {
     }
     private func time(_ t: Double) -> CMTime { CMTime(seconds: t, preferredTimescale: 600000) }
 
+    private func mark(_ phase: String, _ fields: [String: Any] = [:]) {
+        lock.lock(); defer { lock.unlock() }
+        context["phase"] = phase
+        context.merge(fields) { _, new in new }
+    }
+
+    private static func errorChain(_ error: Error) -> [[String: Any]] {
+        var errors: [[String: Any]] = [], current: NSError? = error as NSError
+        while let cause = current, errors.count < 5 {
+            var entry: [String: Any] = ["domain": cause.domain, "code": cause.code,
+                                      "description": String(cause.localizedDescription.prefix(800))]
+            for (key, name) in [(NSLocalizedFailureReasonErrorKey, "failureReason"),
+                                ("NSDebugDescription", "debugDescription")] {
+                if let value = cause.userInfo[key] as? String { entry[name] = String(value.prefix(800)) }
+            }
+            errors.append(entry)
+            current = cause.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return errors
+    }
+
+    func failureDetails(_ error: Error) -> [String: Any] {
+        lock.lock(); var details = context; lock.unlock()
+        details["errors"] = Self.errorChain(error)
+        return details
+    }
+
+    private func audioFailure(_ error: Error, phase: String) {
+        let details: [String: Any] = ["phase": phase, "errors": Self.errorChain(error)]
+        lock.lock(); context["audioFailure"] = details; lock.unlock()
+    }
+
     func run(source: URL, destination: URL, from: Double, duration: Double,
              progress: @escaping (Double) -> Void) throws -> Info {
+        mark("source-open")
         try check()
         let asset = AVURLAsset(url: source)
         guard from.isFinite, duration.isFinite, from >= 0, duration > 0,
@@ -55,6 +89,9 @@ final class ReverseMedia {
         let hdr = transfer == (kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG as String)
             || transfer == (kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ as String)
         let pixelFormat = hdr ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        mark("source-format", ["from": from, "duration": duration, "width": width, "height": height, "fps": fps,
+                               "sourceCodec": ext.map { CMFormatDescriptionGetMediaSubType($0) } ?? 0,
+                               "pixelFormat": pixelFormat, "writerCodec": "hevc", "transfer": transfer])
         let token = UUID().uuidString
         let dir = destination.deletingLastPathComponent()
         let part = dir.appendingPathComponent("reverse-\(token).part.mp4")
@@ -70,6 +107,7 @@ final class ReverseMedia {
             try reverseAudio(asset: asset, track: $0, from: from, duration: duration, to: pcm, progress: progress)
         }
         try check()
+        mark("writer-create")
         let writer = try AVAssetWriter(outputURL: part, fileType: .mp4)
         lock.lock(); currentWriter = writer; lock.unlock()
         writer.shouldOptimizeForNetworkUse = true
@@ -96,6 +134,7 @@ final class ReverseMedia {
             sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: pixelFormat])
         var audio: AVAssetWriterInput?, audioReader: AVAssetReader?, audioOutput: AVAssetReaderTrackOutput?
         if let format = audioFormat {
+            mark("audio-reader", ["sampleRate": format.sampleRate, "channels": format.channelCount])
             let sound = AVAssetWriterInput(mediaType: .audio, outputSettings: [AVFormatIDKey: kAudioFormatMPEG4AAC,
                 AVSampleRateKey: format.sampleRate, AVNumberOfChannelsKey: format.channelCount, AVEncoderBitRateKey: 256000])
             sound.expectsMediaDataInRealTime = false
@@ -109,6 +148,7 @@ final class ReverseMedia {
             audioReader = reader; audioOutput = out
         }
         defer { audioReader?.cancelReading() }
+        mark("writer-start")
         guard writer.startWriting() else { throw writer.error ?? Failure(message: "Кодировщик реверсии не запустился") }
         writer.startSession(atSourceTime: .zero)
         // Две независимые подачи: writer может ждать звук, пока видеовход
@@ -118,16 +158,19 @@ final class ReverseMedia {
             audioGroup.enter()
             DispatchQueue(label: "ryndi.reverse.audio", qos: .userInitiated).async {
                 defer { audioGroup.leave() }
+                var phase = "audio-read"
                 do {
                     while let sample = out.copyNextSampleBuffer() {
+                        phase = "audio-write"
                         try autoreleasepool {
                             try self.wait(sound, writer)
                             guard sound.append(sample) else { throw writer.error ?? Failure(message: "Обратный звук не записался") }
                         }
+                        phase = "audio-read"
                     }
                     if reader.status == .failed { throw reader.error ?? Failure(message: "Обратный звук не прочитан") }
                     sound.markAsFinished()
-                } catch { feed.fail(error); writer.cancelWriting() }
+                } catch { self.audioFailure(error, phase: phase); feed.fail(error); writer.cancelWriting() }
             }
         }
         var audioDone = false
@@ -145,6 +188,7 @@ final class ReverseMedia {
             try feed.check()
             let lo = max(from, hi - blockSeconds)
             try autoreleasepool {
+                mark("video-read", ["blockFrom": lo, "blockTo": hi, "writtenFrames": count])
                 let reader = try AVAssetReader(asset: asset)
                 reader.timeRange = CMTimeRange(start: time(lo), duration: time(hi - lo))
                 let out = AVAssetReaderTrackOutput(track: track,
@@ -161,6 +205,7 @@ final class ReverseMedia {
                 }
                 if reader.status == .failed { throw reader.error ?? Failure(message: "Чтение кадров прервалось") }
                 samples.sort { CMSampleBufferGetPresentationTimeStamp($0) < CMSampleBufferGetPresentationTimeStamp($1) }
+                mark("video-write", ["decodedFrames": samples.count])
                 for sample in samples.reversed() {
                     try check()
                     let t = CMSampleBufferGetPresentationTimeStamp(sample).seconds
@@ -181,14 +226,17 @@ final class ReverseMedia {
         }
         guard count > 0 else { throw Failure(message: "Выбранный участок не содержит читаемых кадров") }
         video.markAsFinished()
+        mark("audio-finish", ["writtenFrames": count])
         while audioGroup.wait(timeout: .now() + 0.1) == .timedOut { try check(); try feed.check() }
         audioDone = true; try feed.check()
+        mark("writer-finish")
         writer.endSession(atSourceTime: time(duration))
         let finished = DispatchSemaphore(value: 0)
         writer.finishWriting { finished.signal() }
         while finished.wait(timeout: .now() + 0.1) == .timedOut { try check() }
         try check()
         guard writer.status == .completed else { throw writer.error ?? Failure(message: "Реверсия не сохранилась") }
+        mark("result-file")
         // destination — новый номер, случайный для каждого запроса. Чужой
         // файл не перезаписываем даже при ошибке клиента.
         guard !FileManager.default.fileExists(atPath: destination.path) else { throw Failure(message: "Файл реверсии уже существует") }
@@ -220,11 +268,13 @@ final class ReverseMedia {
 
     private func reverseAudio(asset: AVAsset, track: AVAssetTrack, from: Double, duration: Double,
                               to file: URL, progress: @escaping (Double) -> Void) throws -> AVAudioFormat {
+        mark("audio-format")
         let desc = track.formatDescriptions.first.map { $0 as! CMAudioFormatDescription }
         let asbd = desc.flatMap { CMAudioFormatDescriptionGetStreamBasicDescription($0)?.pointee }
         let rate = asbd?.mSampleRate ?? 48000, channels = asbd?.mChannelsPerFrame ?? 2
         guard rate > 0, channels > 0, let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
             sampleRate: rate, channels: channels, interleaved: true) else { throw Failure(message: "Формат звука не прочитан") }
+        mark("audio-file", ["sampleRate": rate, "channels": channels, "sourceAudioCodec": asbd?.mFormatID ?? 0])
         let pcm = try AVAudioFile(forWriting: file, settings: format.settings, commonFormat: .pcmFormatFloat32, interleaved: true)
         let total = Int((duration * rate).rounded()), block = max(1, Int(rate)), channelCount = Int(channels)
         var stop = total
@@ -233,6 +283,7 @@ final class ReverseMedia {
             let start = max(0, stop - block), n = stop - start
             let lo = from + Double(start) / rate, hi = from + Double(stop) / rate
             try autoreleasepool {
+                mark("audio-decode", ["audioBlockFrom": lo, "audioBlockTo": hi])
                 guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(n)),
                       let data = buffer.mutableAudioBufferList.pointee.mBuffers.mData else { throw Failure(message: "Не хватило памяти для звука") }
                 buffer.frameLength = AVAudioFrameCount(n)
@@ -263,6 +314,7 @@ final class ReverseMedia {
                         let value = floats[a]; floats[a] = floats[b]; floats[b] = value
                     }
                 }
+                mark("audio-pcm-write")
                 try pcm.write(from: buffer)
             }
             stop = start; progress(0.24 * Double(total - stop) / Double(max(1, total)))

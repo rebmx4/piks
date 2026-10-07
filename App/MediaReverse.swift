@@ -44,9 +44,11 @@ extension MediaBridge {
                         self.finishReverse(req)
                     }
                 } catch {
+                    var details = engine.failureDetails(error)
+                    details["source"] = body["preview"] as? Bool == true ? "preview" : "original"
                     DispatchQueue.main.async {
                         timer.invalidate()
-                        self.finishReverse(req, error: error.localizedDescription, cancelled: engine.isCancelled)
+                        self.finishReverse(req, error: error.localizedDescription, cancelled: engine.isCancelled, details: details)
                     }
                 }
             }
@@ -64,9 +66,13 @@ extension MediaBridge {
         if let job = reverser, job.req == req { job.engine.cancel() }
     }
 
-    private func finishReverse(_ req: String, error: String? = nil, cancelled: Bool = false) {
+    private func finishReverse(_ req: String, error: String? = nil, cancelled: Bool = false, details: [String: Any]? = nil) {
         guard reverser?.req == req else { return }
-        if let error = error { send(["event": cancelled ? "reverse-cancelled" : "reverse-error", "req": req, "reason": error]) }
+        if let error = error {
+            var event: [String: Any] = ["event": cancelled ? "reverse-cancelled" : "reverse-error", "req": req, "reason": error]
+            if let details = details { event["details"] = details }
+            send(event)
+        }
         reverser = nil; UIApplication.shared.isIdleTimerDisabled = false; previews.resume()
     }
 }
