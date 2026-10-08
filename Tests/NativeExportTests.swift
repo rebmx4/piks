@@ -16,7 +16,9 @@ final class NativeExportTests: XCTestCase {
 
     private func export(cut: Bool) async throws -> URL {
         let source = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "portrait-full-range", withExtension: "mp4", subdirectory: "Fixtures"))
-        let matrix: [Double] = [1.5, 0, 0, 1.5, 0, 0, 1]
+        // Контракт nativeplan: единичный кадр -> пиксели выхода, не
+        // пиксели исходника -> пиксели выхода (RenderScene.placement).
+        let matrix: [Double] = [1080, 0, 0, 1920, 0, 0, 1]
         func item(_ at: Double, _ from: Double, _ duration: Double) -> [String: Any] {
             ["media": "m1", "at": at, "from": from, "dur": duration, "k0": Int(at * 25), "frames": [matrix]]
         }
