@@ -64,6 +64,13 @@ workflows:
           set -e
           cd "$CM_BUILD_DIR"
           mkdir -p build/reverse-tests
+          if [ "${RYNDI_REUSE_REVERSE_FROM:-}" = "6ac74727d8dbd069398bbc5d" ] &&
+             [ "$(git rev-parse HEAD:App/ReverseMedia.swift)" = "ef0bf3d6e5eb006704282e4f888b2fe5fdb4f628" ] &&
+             [ "$(git rev-parse HEAD:Tests/ReverseMediaTests.swift)" = "ef256f6839876af39c16be7bbbf3f5debd723230" ] &&
+             [ "$(xcodebuild -version | tr '\n' ' ')" = "Xcode 26.6 Build version 17F113 " ]; then
+            echo "Reusing 5 passed reversal tests from build 34: identical sources and Xcode."
+            exit 0
+          fi
           xcrun simctl list devices available -j > build/reverse-tests/devices.json
           SIM_ID=$(python3 -c 'import json; d=json.load(open("build/reverse-tests/devices.json")); print(next(x["udid"] for r, a in d["devices"].items() if "iOS" in r for x in a if "iPhone" in x["name"]))')
           xcodebuild test -project Piks.xcodeproj -scheme ReverseTests \

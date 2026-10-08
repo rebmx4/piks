@@ -688,7 +688,10 @@ final class NativeExporter {
     private var ended = false
     private var reader: AVAssetReader?
     private var writer: AVAssetWriter?
-    private var phase = "resolve"
+    private var phase = "resolve" {
+        didSet { send(["event": "export-progress", "job": job, "value": 0.0, "phase": phase]) }
+    }
+    private var monitor: DispatchSourceTimer?
     private let temps = TempFiles()         // стереокопии звука (ExportAudio) — стереть в конце
 
     // Вызывается на главной очереди, когда экспорт закончился (файл или nil).
@@ -1103,6 +1106,7 @@ final class NativeExporter {
         }
         writer.startSession(atSourceTime: CMTime.zero)
         phase = "frames"
+        watch(reader, writer)
 
         let group = DispatchGroup()
         let seconds = max(CMTimeGetSeconds(total), 0.001)
@@ -1115,6 +1119,27 @@ final class NativeExporter {
         group.notify(queue: work) {
             self.complete(reader, writer, out, codec: codec, audio: hasAudio)
         }
+    }
+
+    // После отказа reader/writer второй input может перестать запрашивать
+    // данные. Тогда его pump не вызывается и DispatchGroup никогда не
+    // заканчивается. Проверяем именно отказ AVFoundation, не ждём таймаут UI.
+    private func watch(_ reader: AVAssetReader, _ writer: AVAssetWriter) {
+        let timer = DispatchSource.makeTimerSource(queue: work)
+        timer.schedule(deadline: .now() + .milliseconds(200), repeating: .milliseconds(200))
+        timer.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            if self.cancelled {
+                writer.cancelWriting()
+                self.finishCancelled()
+            } else if reader.status == .failed || writer.status == .failed {
+                self.phase = reader.status == .failed ? "reader-frames" : "writer-frames"
+                let error: Error = (reader.status == .failed ? reader.error : writer.error) ?? ExportError("сборка ролика не удалась")
+                self.fail(error)
+            }
+        }
+        monitor = timer
+        timer.resume()
     }
 
     private func pump(_ input: AVAssetWriterInput, _ output: AVAssetReaderOutput, _ queue: DispatchQueue,
@@ -1213,12 +1238,16 @@ final class NativeExporter {
     }
 
     private func end(_ event: [String: Any], file: URL?) {
-        temps.removeAll()
-        DispatchQueue.main.async {
-            if self.ended { return }
-            self.ended = true
-            self.send(event)
-            self.onFinish?(file)
+        work.async {
+            self.monitor?.cancel()
+            self.monitor = nil
+            self.temps.removeAll()
+            DispatchQueue.main.async {
+                if self.ended { return }
+                self.ended = true
+                self.send(event)
+                self.onFinish?(file)
+            }
         }
     }
 

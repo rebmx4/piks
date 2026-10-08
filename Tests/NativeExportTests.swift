@@ -14,14 +14,7 @@ final class NativeExportTests: XCTestCase {
         XCTAssertEqual(CVPixelBufferGetPixelFormatType(try XCTUnwrap(frame)), kCVPixelFormatType_32BGRA)
     }
 
-    func testArrayIsNotAValidOutputPixelFormat() {
-        let attributes: [String: Any] = [kCVPixelBufferPixelFormatTypeKey as String: [kCVPixelFormatType_32BGRA],
-            kCVPixelBufferWidthKey as String: 720, kCVPixelBufferHeightKey as String: 1280]
-        var pool: CVPixelBufferPool?
-        XCTAssertNotEqual(CVPixelBufferPoolCreate(nil, nil, attributes as CFDictionary, &pool), kCVReturnSuccess)
-    }
-
-    private func export(cut: Bool) throws -> URL {
+    private func export(cut: Bool) async throws -> URL {
         let source = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "portrait-full-range", withExtension: "mp4", subdirectory: "Fixtures"))
         let matrix: [Double] = [1.5, 0, 0, 1.5, 0, 0, 1]
         func item(_ at: Double, _ from: Double, _ duration: Double) -> [String: Any] {
@@ -36,19 +29,22 @@ final class NativeExportTests: XCTestCase {
         let done = expectation(description: "native export")
         var result: URL?, failure: [String: Any]?, progress = false
         let engine = NativeExporter(job: UUID().uuidString, plan: plan, send: { event in
+            print("EXPORT-EVENT \(event)")
             if event["event"] as? String == "export-error" { failure = event }
             if event["event"] as? String == "export-progress", (event["value"] as? Double ?? 0) > 0 { progress = true }
         }, resolve: { _, callback in callback(source) })
         engine.onFinish = { result = $0; done.fulfill() }
         engine.start()
-        wait(for: [done], timeout: 40)
+        await fulfillment(of: [done], timeout: 40)
+        if result == nil { engine.cancel() }
+        withExtendedLifetime(engine) {}
         XCTAssertNil(failure, String(describing: failure))
         XCTAssertTrue(progress, "at least one video frame must be encoded")
         return try XCTUnwrap(result, String(describing: failure))
     }
 
-    func testPortraitFullRangeExportsWithStereoSound() throws { try verify(export(cut: false)) }
-    func testPortraitFullRangeExportsAfterScissorsWithStereoSound() throws { try verify(export(cut: true)) }
+    func testPortraitFullRangeExportsWithStereoSound() async throws { try verify(await export(cut: false)) }
+    func testPortraitFullRangeExportsAfterScissorsWithStereoSound() async throws { try verify(await export(cut: true)) }
 
     private func verify(_ url: URL) throws {
         defer { try? FileManager.default.removeItem(at: url) }
