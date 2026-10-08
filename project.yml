@@ -78,7 +78,31 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         CODE_SIGNING_ALLOWED: NO
 
+  ExportMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "12.0"
+    sources:
+      - path: Tests/NativeExportTests.swift
+      - path: App/NativeExport.swift
+      - path: App/ExportAudio.swift
+      - path: App/ExportDiagnostics.swift
+      - path: Tests/Fixtures
+        type: folder
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.piks.export.mac.tests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+
 schemes:
+  ExportMacTests:
+    build:
+      targets:
+        ExportMacTests: all
+    test:
+      targets:
+        - ExportMacTests
   ReverseTests:
     build:
       targets:

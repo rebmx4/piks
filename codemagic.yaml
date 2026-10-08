@@ -75,6 +75,20 @@ workflows:
               exit 1
             }
           tail -n 12 build/reverse-tests/test.log
+      - name: Test portrait export and stereo sound
+        script: |
+          set -e
+          cd "$CM_BUILD_DIR"
+          mkdir -p build/export-tests
+          xcodebuild test -project Piks.xcodeproj -scheme ExportMacTests \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath build/export-tests/derived \
+            -resultBundlePath build/export-tests/ExportTests.xcresult \
+            CODE_SIGNING_ALLOWED=NO > build/export-tests/test.log 2>&1 || {
+              tail -n 80 build/export-tests/test.log
+              exit 1
+            }
+          tail -n 12 build/export-tests/test.log
       - name: Set build number
         script: |
           cd "$CM_BUILD_DIR"
@@ -96,6 +110,8 @@ workflows:
       - /tmp/xcodebuild_logs/*.log
       - build/reverse-tests/test.log
       - build/reverse-tests/ReverseTests.xcresult
+      - build/export-tests/test.log
+      - build/export-tests/ExportTests.xcresult
     publishing:
       app_store_connect:
         auth: integration

@@ -70,7 +70,7 @@ final class MediaBridge: NSObject {
         let build = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? ""
         var caps = ["pick", "export", "photos", "share", "wave", "audio", "ramps", "read", "adjust", "gallery",
                     "speed", "crop", "mask", "overlap", "cifilter", "stills", "files", "photo", "live", "haptic",
-                    "mic", "vision", "preview", "stereo", "inbox", "keep", "cache", "play", "reverse", "reverse-proxy"]
+                    "mic", "vision", "preview", "stereo", "inbox", "keep", "cache", "play", "reverse", "reverse-proxy", "mediaRead"]
         if canChooseSite { caps.insert("site", at: 4) }
         if #available(iOS 17.0, *) { caps.append("subject") }
         let list = caps.map { "'" + $0 + "'" }.joined(separator: ", ")
@@ -129,6 +129,7 @@ final class MediaBridge: NSObject {
         case "wave":          makeWave(body["id"] as? String, buckets: (body["buckets"] as? Int) ?? 2000)
         case "audio":         makeAudioFile(body["id"] as? String)
         case "read":          readAudioBytes(body)
+        case "media-read":    readMediaBytes(body)
         case "gallery-albums", "gallery-assets", "gallery-use":
             galleryCommand(body["cmd"] as? String ?? "", body)
         case "file-put":      filePut(body)
@@ -248,7 +249,7 @@ final class MediaBridge: NSObject {
     // Сборка №17: «u…» — файл страницы, «l…» — ролик живого фото, «p…» у фото —
     // картинка JPEG (MediaFiles.swift).
     func resolveFile(_ id: String, done: @escaping (URL?) -> Void) {
-        if let file = files[id], FileManager.default.fileExists(atPath: file.path) {
+        if let file = files[id], FileManager.default.isReadableFile(atPath: file.path) {
             done(file)
             return
         }

@@ -2,7 +2,6 @@ import Foundation
 import AVFoundation
 import CoreImage
 import Photos
-import UIKit
 
 // Нативный экспорт Ryndi: ролик собирает сам телефон, как CapCut.
 //
@@ -616,7 +615,8 @@ final class RyndiCompositor: NSObject, AVVideoCompositing {
     }
 
     var requiredPixelBufferAttributesForRenderContext: [String: Any] {
-        return [kCVPixelBufferPixelFormatTypeKey as String: [kCVPixelFormatType_32BGRA]]
+        // Вход допускает список форматов, выходной пул — один CFNumber.
+        return [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
     }
 
     func renderContextChanged(_ newRenderContext: AVVideoCompositionRenderContext) {}
@@ -688,6 +688,7 @@ final class NativeExporter {
     private var ended = false
     private var reader: AVAssetReader?
     private var writer: AVAssetWriter?
+    private var phase = "resolve"
     private let temps = TempFiles()         // стереокопии звука (ExportAudio) — стереть в конце
 
     // Вызывается на главной очереди, когда экспорт закончился (файл или nil).
@@ -713,7 +714,7 @@ final class NativeExporter {
                 do {
                     try self.build(files)
                 } catch {
-                    self.fail(error.localizedDescription)
+                    self.fail(error)
                 }
             }
         }
@@ -786,7 +787,9 @@ final class NativeExporter {
     }
 
     private func build(_ files: [String: URL]) throws {
+        phase = "assemble"
         let a = try NativeExporter.assemble(plan, files, temps: temps)
+        phase = "reader-setup"
         try run(a.comp, a.video, a.mix, a.total, loud: Float(a.loud))
     }
 
@@ -1089,14 +1092,17 @@ final class NativeExporter {
         self.reader = reader
         self.writer = writer
         if cancelled { finishCancelled(); return }
+        phase = "writer-start"
         guard writer.startWriting() else {
             throw writer.error ?? (ExportError("запись файла не началась") as Error)
         }
+        phase = "reader-start"
         guard reader.startReading() else {
             writer.cancelWriting()
             throw reader.error ?? (ExportError("чтение роликов не началось") as Error)
         }
         writer.startSession(atSourceTime: CMTime.zero)
+        phase = "frames"
 
         let group = DispatchGroup()
         let seconds = max(CMTimeGetSeconds(total), 0.001)
@@ -1160,7 +1166,8 @@ final class NativeExporter {
             return
         }
         if reader.status == .failed || writer.status == .failed {
-            let why = (writer.error ?? reader.error)?.localizedDescription ?? "сборка ролика не удалась"
+            phase = reader.status == .failed ? "reader-frames" : "writer-frames"
+            let why: Error = (reader.status == .failed ? reader.error : writer.error) ?? ExportError("сборка ролика не удалась")
             writer.cancelWriting()
             try? FileManager.default.removeItem(at: out)
             fail(why)
@@ -1168,7 +1175,8 @@ final class NativeExporter {
         }
         writer.finishWriting {
             guard writer.status == .completed else {
-                self.fail(writer.error?.localizedDescription ?? "файл не записался")
+                self.phase = "writer-finish"
+                self.fail(writer.error ?? ExportError("файл не записался"))
                 return
             }
             let attrs = try? FileManager.default.attributesOfItem(atPath: out.path)
@@ -1196,8 +1204,12 @@ final class NativeExporter {
         end(["event": "export-cancelled", "job": job], file: nil)
     }
 
-    private func fail(_ reason: String) {
-        end(["event": "export-error", "job": job, "reason": reason], file: nil)
+    private func fail(_ error: Error) {
+        reader?.cancelReading()
+        writer?.cancelWriting()
+        if let file = writer?.outputURL { try? FileManager.default.removeItem(at: file) }
+        end(["event": "export-error", "job": job, "reason": error.localizedDescription,
+             "details": ExportDiagnostics.details(error, phase: phase)], file: nil)
     }
 
     private func end(_ event: [String: Any], file: URL?) {
