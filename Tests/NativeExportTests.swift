@@ -59,10 +59,14 @@ final class NativeExportTests: XCTestCase {
     }
 
     func testMaskedEffectWindowEndsExactlyAndFeatherMixesOnce() throws {
+        // Растушёвка заканчивается на радиусе 40. Точка x=8 имеет
+        // радиус 39.5 и ещё полупрозрачна; чёрный фон проверяем при x=4.
+        let center = (48, 64), hidden = (4, 64), edge = (80, 64)
+        XCTAssertEqual(pixels(maskImage(inverted: false, feather: true), [center, hidden, edge]).map { $0[0] }, [255, 0, 128])
         let renderer = try scene(inverted: false, feather: true, opacity: 0.5)
-        let before = pixels(renderer.compose(at: 0.96, frame: { _ in nil }), [(8, 64)])
-        let active = pixels(renderer.compose(at: 1, frame: { _ in nil }), [(48, 64), (8, 64), (80, 64)])
-        let after = pixels(renderer.compose(at: 2, frame: { _ in nil }), [(8, 64)])
+        let before = pixels(renderer.compose(at: 0.96, frame: { _ in nil }), [hidden])
+        let active = pixels(renderer.compose(at: 1, frame: { _ in nil }), [center, hidden, edge])
+        let after = pixels(renderer.compose(at: 2, frame: { _ in nil }), [hidden])
         XCTAssertLessThan(before[0].max() ?? 255, 3)
         XCTAssertLessThan(after[0].max() ?? 255, 3)
         XCTAssertLessThanOrEqual(abs(active[0][0] - 120), 3)
