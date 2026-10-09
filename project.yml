@@ -53,6 +53,36 @@ targets:
         CODE_SIGN_STYLE: Manual
         SKIP_INSTALL: YES
 
+  WrapperProbe:
+    type: application
+    platform: iOS
+    sources:
+      - path: Tests/WrapperProbeApp.swift
+      - path: App/WrapperInputPolicy.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.piks.wrapper.probe
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGNING_ALLOWED: NO
+
+  WrapperInputUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: Tests/WrapperInputUITests.swift
+      - path: Tests/WrapperInputModeTests.swift
+      - path: App/WrapperInputPolicy.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.piks.wrapper.input.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: WrapperProbe
+        CODE_SIGNING_ALLOWED: NO
+    dependencies:
+      - target: WrapperProbe
+
   ReverseTests:
     type: bundle.unit-test
     platform: iOS
@@ -96,6 +126,14 @@ targets:
         CODE_SIGNING_ALLOWED: NO
 
 schemes:
+  WrapperInputTests:
+    build:
+      targets:
+        WrapperProbe: all
+        WrapperInputUITests: all
+    test:
+      targets:
+        - WrapperInputUITests
   ExportMacTests:
     build:
       targets:

@@ -10,6 +10,10 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
     private var progressView: UIProgressView!
     private var offlineView: UIView!
     private let refreshControl = UIRefreshControl()
+    private var wrapperInputMode = WrapperInputMode.load(comparisonAvailable: canChooseSite)
+    private var wrapperInputBaseline: WrapperInputBaseline!
+    private var wrapperGestures: [UIGestureRecognizer] = []
+    private var offeredInputComparison = false
 
     private let bgColor = UIColor(red: 0.0549, green: 0.0588, blue: 0.0745, alpha: 1) // #0E0F13
     private let accent = UIColor(red: 1.0, green: 0.176, blue: 0.529, alpha: 1)       // #FF2D87
@@ -21,6 +25,26 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
         setupProgress()
         setupOffline()
         clearWebCachesThenLoad()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        guard canChooseSite, !offeredInputComparison else { return }
+        offeredInputComparison = true
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        let sheet = UIAlertController(title: "Проверка касаний",
+            message: "Сборка \(build) · \(rootUrl.path)\nСейчас: \(wrapperInputMode.title).\nСравните первый свайп после ножниц, выделения и ромбика. Чтобы сменить режим, полностью закройте и снова откройте приложение.",
+            preferredStyle: .alert)
+        for mode in [WrapperInputMode.minimal, .standard] {
+            sheet.addAction(UIAlertAction(title: mode.title, style: .default) { [weak self] _ in
+                guard let self = self else { return }
+                self.wrapperInputMode = mode
+                UserDefaults.standard.set(mode.rawValue, forKey: WrapperInputMode.preferenceKey)
+                self.configureWrapperInput()
+            })
+        }
+        sheet.addAction(UIAlertAction(title: "Продолжить: \(wrapperInputMode.title)", style: .cancel, handler: nil))
+        present(sheet, animated: true)
     }
 
     // The iOS URLCache and WKWebsiteDataStore were holding stale index.html
@@ -91,6 +115,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
         webView.allowsBackForwardNavigationGestures = true
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.scrollView.bounces = true
+        wrapperInputBaseline = WrapperInputBaseline(webView)
         webView.isOpaque = false
         // Прозрачный: под страницей — слой нативного превью (NativePlayback);
         // страница сама красит свой фон, а на время игры открывает окно превью.
@@ -118,16 +143,28 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
         ])
         mediaBridge.attachPlayback(playback)
 
-        if pullToRefresh {
+        configureWrapperInput()
+        webView.addObserver(self, forKeyPath: #keyPath(WKWebView.estimatedProgress), options: .new, context: nil)
+    }
+
+    private func configureWrapperInput() {
+        for gesture in wrapperGestures { webView.removeGestureRecognizer(gesture) }
+        wrapperGestures.removeAll()
+        wrapperInputBaseline.apply(to: webView, mode: wrapperInputMode)
+
+        if pullToRefresh && wrapperInputMode == .standard {
             refreshControl.tintColor = .lightGray
+            refreshControl.removeTarget(self, action: #selector(reloadWeb), for: .valueChanged)
             refreshControl.addTarget(self, action: #selector(reloadWeb), for: .valueChanged)
             webView.scrollView.refreshControl = refreshControl
+        } else {
+            refreshControl.endRefreshing()
+            webView.scrollView.refreshControl = nil
         }
-        webView.addObserver(self, forKeyPath: #keyPath(WKWebView.estimatedProgress), options: .new, context: nil)
 
         // Три пальца, долгое нажатие — меню версии (см. chooseSite). Только
         // там, где версию можно выбирать (canChooseSite: TestFlight, отладка).
-        if canChooseSite {
+        if canChooseSite && wrapperInputMode == .standard {
             let siteGesture = UILongPressGestureRecognizer(target: self, action: #selector(chooseSite(_:)))
             siteGesture.numberOfTouchesRequired = 3
             siteGesture.minimumPressDuration = 1.0
@@ -137,6 +174,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
             siteGesture.delaysTouchesEnded = false
             siteGesture.delegate = self
             webView.addGestureRecognizer(siteGesture)
+            wrapperGestures.append(siteGesture)
             installInputTrace(siteGesture, menuWasDelayed: menuWasDelayed)
         }
     }
@@ -174,6 +212,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
             }
         }
         webView.addGestureRecognizer(trace)
+        wrapperGestures.append(trace)
     }
 
     private func setupProgress() {

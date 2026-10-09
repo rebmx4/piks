@@ -58,6 +58,23 @@ workflows:
           keychain add-certificates
           echo "===== Applying profiles to project ====="
           xcode-project use-profiles --verbose
+      - &wrapper_tests
+        name: Test wrapper input and nested scrolling
+        script: |
+          set -e
+          cd "$CM_BUILD_DIR"
+          mkdir -p build/wrapper-tests
+          xcrun simctl list devices available -j > build/wrapper-tests/devices.json
+          SIM_ID=$(python3 -c 'import json; d=json.load(open("build/wrapper-tests/devices.json")); print(next(x["udid"] for r, a in d["devices"].items() if "iOS" in r for x in a if "iPhone" in x["name"]))')
+          xcodebuild test -project Piks.xcodeproj -scheme WrapperInputTests \
+            -destination "platform=iOS Simulator,id=$SIM_ID" \
+            -derivedDataPath build/wrapper-tests/derived \
+            -resultBundlePath build/wrapper-tests/WrapperInputTests.xcresult \
+            CODE_SIGNING_ALLOWED=NO > build/wrapper-tests/test.log 2>&1 || {
+              tail -n 100 build/wrapper-tests/test.log
+              exit 1
+            }
+          tail -n 20 build/wrapper-tests/test.log
       - &reverse_tests
         name: Test video and audio reversal
         script: |
@@ -119,6 +136,8 @@ workflows:
       - build/reverse-tests/ReverseTests.xcresult
       - build/export-tests/test.log
       - build/export-tests/ExportTests.xcresult
+      - build/wrapper-tests/test.log
+      - build/wrapper-tests/WrapperInputTests.xcresult
     publishing:
       app_store_connect:
         auth: integration
@@ -143,10 +162,13 @@ workflows:
         script: |
           cd "$CM_BUILD_DIR"
           xcodegen generate
+      - *wrapper_tests
       - *reverse_tests
     artifacts:
       - build/reverse-tests/test.log
       - build/reverse-tests/ReverseTests.xcresult
+      - build/wrapper-tests/test.log
+      - build/wrapper-tests/WrapperInputTests.xcresult
 
   mac-native-tests:
     name: Piks AVFoundation tests on Mac (no IPA or publishing)
