@@ -64,6 +64,7 @@ struct ExportPlan {
         let crop: CGRect?           // обрезка: доли кадра, как видит зритель, y вниз
         let mask: [Int]             // маски: одна на кусок или по кадру с k0, −1 — без маски
         let ci: [CiStep]            // фильтры Core Image к кадру куска
+        var maskFx: Bool = false    // собственная маска: эффект в скрытой части
     }
     // Фильтр Core Image по имени: params — постоянные значения (число, массив
     // 2…4 чисел — вектор, у ключей с Color — цвет), anim — числа по кадрам
@@ -74,6 +75,32 @@ struct ExportPlan {
         let anim: [String: [Double]]
         let k0: Int
         let clamp: Bool
+        var skipMasked: Bool = false
+    }
+    // Общая обработка фона масок: те же кадры исходников, без дополнительных
+    // дорожек декодера. Окна — [начало, конец) в кадрах выхода.
+    struct MaskFx {
+        let spans: [[Int]]
+        let ci: [CiStep]
+        let k0: Int
+        let moves: [[Double]]
+
+        init?(json: [String: Any]) {
+            spans = ((json["spans"] as? [[Any]]) ?? []).compactMap { raw in
+                let values = raw.compactMap { ExportPlan.int($0) }
+                return values.count == 2 && values[0] >= 0 && values[1] > values[0] ? values : nil
+            }
+            if spans.isEmpty { return nil }
+            ci = ExportPlan.steps(json["ci"])
+            let motion = (json["moves"] as? [String: Any]) ?? [:]
+            k0 = ExportPlan.int(motion["k0"]) ?? 0
+            moves = ((motion["frames"] as? [[Any]]) ?? []).compactMap { raw in
+                let row = raw.compactMap { ExportPlan.num($0) }
+                return row.count >= 6 && row.allSatisfy({ $0.isFinite }) ? row : nil
+            }
+        }
+
+        func active(_ k: Int) -> Bool { spans.contains { k >= $0[0] && k < $0[1] } }
     }
     // Настройки цвета куска — готовые числа формул шейдера превью.
     struct Fx {
@@ -116,6 +143,7 @@ struct ExportPlan {
     let luts: [Data]                // таблицы цвета для CIColorCube: 33³ × RGBA, Float32
     let masks: [Data]               // маски кусков: PNG
     let ci: [CiStep]                // фильтры ко всему кадру
+    let maskFx: MaskFx?
     let save: Bool
 
     static let lutN = 33
@@ -170,7 +198,7 @@ struct ExportPlan {
                 items.append(Item(media: mid, at: at, from: from, dur: dur,
                                   k0: ExportPlan.int(raw["k0"]) ?? 0, frames: rows, fx: fx,
                                   src: srcLen, crop: crop, mask: ExportPlan.ints(raw["mask"]),
-                                  ci: ExportPlan.steps(raw["ci"])))
+                                  ci: ExportPlan.steps(raw["ci"]), maskFx: (raw["mask_fx"] as? Bool) ?? false))
             }
             allLayers.append(items)
         }
@@ -229,6 +257,7 @@ struct ExportPlan {
             ((raw as? String).flatMap { Data(base64Encoded: $0) }) ?? Data()
         }
         ci = ExportPlan.steps(json["ci"])
+        maskFx = (json["mask_fx"] as? [String: Any]).flatMap { MaskFx(json: $0) }
     }
 
     static func num(_ v: Any?) -> Double? { return (v as? NSNumber)?.doubleValue }
@@ -248,7 +277,8 @@ struct ExportPlan {
                 if !values.isEmpty { anim[key] = values }
             }
             out.append(CiStep(name: name, params: (raw["params"] as? [String: Any]) ?? [:], anim: anim,
-                              k0: ExportPlan.int(raw["k0"]) ?? 0, clamp: (raw["clamp"] as? Bool) ?? true))
+                              k0: ExportPlan.int(raw["k0"]) ?? 0, clamp: (raw["clamp"] as? Bool) ?? true,
+                              skipMasked: (raw["skip_masked"] as? Bool) ?? false))
         }
         return out
     }
@@ -275,6 +305,7 @@ final class RenderScene {
         let crop: CGRect?
         let mask: [CIImage?]                // одна на кусок или по кадру с k0
         let ci: [ExportPlan.CiStep]
+        var maskFx: Bool = false
     }
     struct Overlay {
         let image: CIImage
@@ -289,11 +320,12 @@ final class RenderScene {
     let grade: [Double]?
     let luts: [Data]
     let ci: [ExportPlan.CiStep]         // ко всему кадру, под надписями
+    let maskFx: ExportPlan.MaskFx?
     private var lastMain: CIImage?      // основной слой, если кадра на стыке нет
     private var lastK = -1_000_000       // номер кадра lastMain: после перемотки он чужой
 
     init(size: CGSize, fps: Double, layers: [[Item]], overlays: [Overlay], grade: [Double]?, luts: [Data],
-         ci: [ExportPlan.CiStep] = []) {
+         ci: [ExportPlan.CiStep] = [], maskFx: ExportPlan.MaskFx? = nil) {
         self.size = size
         self.fps = fps
         self.layers = layers
@@ -301,6 +333,7 @@ final class RenderScene {
         self.grade = grade
         self.luts = luts
         self.ci = ci
+        self.maskFx = maskFx
     }
 
     // Вызывается только с очереди композитора — по одному кадру за раз.
@@ -325,7 +358,9 @@ final class RenderScene {
             }
             if let image = placed { out = image.composited(over: out) }
         }
-        for step in ci { out = RenderScene.filtered(out, step, k: k, clamp: bounds) }
+        for step in ci where !(step.skipMasked && maskFx?.active(k) == true) {
+            out = RenderScene.filtered(out, step, k: k, clamp: bounds)
+        }
         for o in overlays where t + 1e-6 >= o.at && t + 1e-6 < o.end {
             out = o.image.composited(over: out)
         }
@@ -381,8 +416,27 @@ final class RenderScene {
                                            tx: -me.minX / max(me.width, 1), ty: 1 + me.minY / max(me.height, 1))
             let placedMask = mask.transformed(by: toUnit.concatenating(RenderScene.planMatrix(row))
                 .concatenating(CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: size.height)))
+            var background = CIImage.empty()
+            if item.maskFx, let effect = maskFx, effect.active(k) {
+                let bounds = CGRect(origin: .zero, size: size)
+                let black = CIImage(color: CIColor(red: 0, green: 0, blue: 0)).cropped(to: bounds)
+                background = image.composited(over: black).cropped(to: bounds)
+                for step in effect.ci { background = RenderScene.filtered(background, step, k: k, clamp: bounds) }
+                if !effect.moves.isEmpty {
+                    let r = effect.moves[max(0, min(effect.moves.count - 1, k - effect.k0))]
+                    let flip = CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: size.height)
+                    background = background.clampedToExtent()
+                        .transformed(by: flip.concatenating(RenderScene.planMatrix(r)).concatenating(flip))
+                        .cropped(to: bounds)
+                }
+                // Фон эффекта имеет ту же область и alpha, что исходный
+                // клип. За его рамкой видны нижние слои; opacity — один раз.
+                background = background.applyingFilter("CIBlendWithAlphaMask", parameters: [
+                    kCIInputBackgroundImageKey: CIImage.empty(), kCIInputMaskImageKey: image,
+                ])
+            }
             image = image.applyingFilter("CIBlendWithMask", parameters: [
-                kCIInputBackgroundImageKey: CIImage.empty(),
+                kCIInputBackgroundImageKey: background,
                 kCIInputMaskImageKey: placedMask,
             ])
         }
@@ -852,7 +906,7 @@ final class NativeExporter {
                     items.append(RenderScene.Item(trackID: kCMPersistentTrackID_Invalid, still: img,
                                                   at: it.at, end: it.at + it.dur, k0: it.k0, frames: it.frames,
                                                   pref: .identity, fx: it.fx, crop: it.crop,
-                                                  mask: it.mask.map { maskImage($0) }, ci: it.ci))
+                                                  mask: it.mask.map { maskImage($0) }, ci: it.ci, maskFx: it.maskFx))
                     continue
                 }
                 guard let a = asset(it.media), let src = a.tracks(withMediaType: .video).first else {
@@ -877,7 +931,7 @@ final class NativeExporter {
                 try place(chosen, src, at: it.at, from: it.from, dur: it.dur, srcDur: it.src, ends: &ends)
                 items.append(RenderScene.Item(trackID: chosen.trackID, still: nil, at: it.at, end: it.at + it.dur,
                                               k0: it.k0, frames: it.frames, pref: src.preferredTransform,
-                                              fx: it.fx, crop: it.crop, mask: it.mask.map { maskImage($0) }, ci: it.ci))
+                                              fx: it.fx, crop: it.crop, mask: it.mask.map { maskImage($0) }, ci: it.ci, maskFx: it.maskFx))
             }
             // Нахлёст меньше полукадра — округление плана, а не переход: в
             // кадре один кусок, как до сборки №17 (первый по списку).
@@ -991,7 +1045,7 @@ final class NativeExporter {
 
         let scene = RenderScene(size: CGSize(width: plan.width, height: plan.height), fps: Double(plan.fps),
                                 layers: sceneLayers, overlays: overlays, grade: plan.grade, luts: plan.luts,
-                                ci: plan.ci)
+                                ci: plan.ci, maskFx: plan.maskFx)
         let vc = AVMutableVideoComposition()
         vc.customVideoCompositorClass = RyndiCompositor.self
         vc.renderSize = scene.size
