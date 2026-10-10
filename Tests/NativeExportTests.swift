@@ -29,11 +29,10 @@ final class NativeExportTests: XCTestCase {
             "layers": [["items": items]],
             "sounds": [["media": "m1", "at": 0, "from": 0, "dur": 2, "volume": 1]]]))
         let done = expectation(description: "native export")
-        var result: URL?, failure: [String: Any]?, progress = false
+        var result: URL?, failure: [String: Any]?
         let engine = NativeExporter(job: UUID().uuidString, plan: plan, send: { event in
             print("EXPORT-EVENT \(event)")
             if event["event"] as? String == "export-error" { failure = event }
-            if event["event"] as? String == "export-progress", (event["value"] as? Double ?? 0) > 0 { progress = true }
         }, resolve: { _, callback in callback(source) })
         engine.onFinish = { result = $0; done.fulfill() }
         engine.start()
@@ -41,7 +40,8 @@ final class NativeExportTests: XCTestCase {
         if result == nil { engine.cancel() }
         withExtendedLifetime(engine) {}
         XCTAssertNil(failure, String(describing: failure))
-        XCTAssertTrue(progress, "at least one video frame must be encoded")
+        // A short export can finish before a positive throttled progress event.
+        // verify() checks encoded frames by decoding the resulting file.
         return try XCTUnwrap(result, String(describing: failure))
     }
 
@@ -76,7 +76,7 @@ final class NativeExportTests: XCTestCase {
             }
         }
         XCTAssertEqual(reader.status, .completed, String(describing: reader.error))
-        XCTAssertEqual(frames, 50)
+        XCTAssertEqual(frames, 50, "export must contain all 50 decoded video frames")
         XCTAssertTrue(visible, "export must contain decoded video, not black frames")
     }
 }
