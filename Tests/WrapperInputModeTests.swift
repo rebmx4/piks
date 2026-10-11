@@ -1,12 +1,15 @@
 import XCTest
 
 final class WrapperInputModeTests: XCTestCase {
-    func testAppStoreIgnoresSavedComparisonMode() {
+    func testAppStoreAlwaysUsesMinimalMode() {
         let suite = "wrapper-input-test-" + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
-        defaults.set("minimal", forKey: WrapperInputMode.preferenceKey)
-        XCTAssertEqual(WrapperInputMode.load(defaults: defaults, comparisonAvailable: false), .standard)
+        XCTAssertEqual(WrapperInputMode.load(defaults: defaults, comparisonAvailable: false), .minimal)
+        for saved in ["standard", "minimal", "obsolete-value"] {
+            defaults.set(saved, forKey: WrapperInputMode.preferenceKey)
+            XCTAssertEqual(WrapperInputMode.load(defaults: defaults, comparisonAvailable: false), .minimal)
+        }
     }
 
     func testTestFlightRestoresTheChosenOrdinaryMode() {

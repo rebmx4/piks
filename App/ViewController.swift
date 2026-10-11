@@ -15,8 +15,8 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
     private var wrapperGestures: [UIGestureRecognizer] = []
     private var offeredInputComparison = false
 
-    private let bgColor = UIColor(red: 0.0549, green: 0.0588, blue: 0.0745, alpha: 1) // #0E0F13
-    private let accent = UIColor(red: 1.0, green: 0.176, blue: 0.529, alpha: 1)       // #FF2D87
+    private let bgColor = UIColor(red: 32 / 255.0, green: 33 / 255.0, blue: 36 / 255.0, alpha: 1) // #202124
+    private let accent = UIColor(red: 118 / 255.0, green: 172 / 255.0, blue: 208 / 255.0, alpha: 1) // #76ACD0
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -32,8 +32,8 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
         guard canChooseSite, !offeredInputComparison else { return }
         offeredInputComparison = true
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
-        let sheet = UIAlertController(title: "Проверка касаний",
-            message: "Сборка \(build) · \(rootUrl.path)\nСейчас: \(wrapperInputMode.title).\nСравните первый свайп после ножниц, выделения и ромбика. Чтобы сменить режим, полностью закройте и снова откройте приложение.",
+        let sheet = UIAlertController(title: NSLocalizedString("Проверка касаний", comment: "Touch comparison title"),
+            message: String(format: NSLocalizedString("Сборка %@ · %@\nСейчас: %@.\nСравните первый свайп после ножниц, выделения и ромбика. Чтобы сменить режим, полностью закройте и снова откройте приложение.", comment: "Touch comparison instructions"), build, rootUrl.path, wrapperInputMode.title),
             preferredStyle: .alert)
         for mode in [WrapperInputMode.minimal, .standard] {
             sheet.addAction(UIAlertAction(title: mode.title, style: .default) { [weak self] _ in
@@ -43,7 +43,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
                 self.configureWrapperInput()
             })
         }
-        sheet.addAction(UIAlertAction(title: "Продолжить: \(wrapperInputMode.title)", style: .cancel, handler: nil))
+        sheet.addAction(UIAlertAction(title: String(format: NSLocalizedString("Продолжить: %@", comment: "Keep current input mode"), wrapperInputMode.title), style: .cancel, handler: nil))
         present(sheet, animated: true)
     }
 
@@ -84,8 +84,9 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
     private func setupWebView() {
         let config = WKWebViewConfiguration()
         let ucc = WKUserContentController()
+        let appLanguage = Bundle.main.preferredLocalizations.first == "ru" ? "ru" : "en"
         ucc.addUserScript(WKUserScript(
-            source: "window.__IS_IOS_APP = true;",
+            source: "window.__IS_IOS_APP = true; window.__APIKS_LOCALE = '\(appLanguage)';",
             injectionTime: .atDocumentStart,
             forMainFrameOnly: false))
         // Что умеет сборка (нативный экспорт и прочее) — до модулей страницы.
@@ -242,12 +243,12 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
             offlineView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
         ])
         let label = UILabel()
-        label.text = "Нет подключения к интернету"
+        label.text = NSLocalizedString("Нет подключения к интернету", comment: "Offline message")
         label.textColor = .lightGray
         label.font = .systemFont(ofSize: 16, weight: .medium)
         label.translatesAutoresizingMaskIntoConstraints = false
         let button = UIButton(type: .system)
-        button.setTitle("Повторить", for: .normal)
+        button.setTitle(NSLocalizedString("Повторить", comment: "Retry connection"), for: .normal)
         button.setTitleColor(accent, for: .normal)
         button.titleLabel?.font = .systemFont(ofSize: 16, weight: .semibold)
         button.addTarget(self, action: #selector(reloadWeb), for: .touchUpInside)
@@ -286,15 +287,15 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
     // На рабочей версии сайта кнопки перехода может ещё не быть.
     @objc private func chooseSite(_ gesture: UILongPressGestureRecognizer) {
         guard gesture.state == .began else { return }
-        let sheet = UIAlertController(title: "Версия редактора", message: rootUrl.absoluteString,
+        let sheet = UIAlertController(title: NSLocalizedString("Версия редактора", comment: "Editor version menu"), message: rootUrl.absoluteString,
                                       preferredStyle: .actionSheet)
-        sheet.addAction(UIAlertAction(title: "Рабочая (/ryn/)", style: .default) { [weak self] _ in
+        sheet.addAction(UIAlertAction(title: NSLocalizedString("Рабочая (/ryn/)", comment: "Stable editor"), style: .default) { [weak self] _ in
             self?.switchSite("stable")
         })
-        sheet.addAction(UIAlertAction(title: "Тестовая (/ryn-next/)", style: .default) { [weak self] _ in
+        sheet.addAction(UIAlertAction(title: NSLocalizedString("Тестовая (/ryn-next/)", comment: "Preview editor"), style: .default) { [weak self] _ in
             self?.switchSite("next")
         })
-        sheet.addAction(UIAlertAction(title: "Отмена", style: .cancel, handler: nil))
+        sheet.addAction(UIAlertAction(title: NSLocalizedString("Отмена", comment: "Cancel menu"), style: .cancel, handler: nil))
         if let pop = sheet.popoverPresentationController {
             pop.sourceView = view
             pop.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)

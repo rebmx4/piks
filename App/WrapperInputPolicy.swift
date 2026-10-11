@@ -7,10 +7,15 @@ enum WrapperInputMode: String {
 
     static let preferenceKey = "apiks.wrapper.input-mode"
 
-    var title: String { self == .minimal ? "Упрощённая" : "Обычная" }
+    var title: String {
+        self == .minimal ? NSLocalizedString("Упрощённая", comment: "Minimal wrapper input mode")
+            : NSLocalizedString("Обычная", comment: "Standard wrapper input mode")
+    }
 
     static func load(defaults: UserDefaults = .standard, comparisonAvailable: Bool) -> WrapperInputMode {
-        guard comparisonAvailable else { return .standard }
+        // App Store always uses the mode accepted on the owner's iPhone.
+        // TestFlight may still restore the saved comparison preference.
+        guard comparisonAvailable else { return .minimal }
         return defaults.string(forKey: preferenceKey).flatMap(WrapperInputMode.init(rawValue:)) ?? .minimal
     }
 }

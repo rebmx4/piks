@@ -3,7 +3,12 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
-	<string>ru</string>
+	<string>en</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>ru</string>
+		<string>en</string>
+	</array>
 	<key>CFBundleDisplayName</key>
 	<string>Piks</string>
 	<key>CFBundleExecutable</key>
@@ -24,11 +29,11 @@
 	<key>NSCameraUsageDescription</key>
 	<string>The camera lets you take a photo right in the editor to edit it.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Микрофон нужен, чтобы записать голос прямо в редакторе.</string>
+	<string>The microphone lets you record your voice in the editor.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Доступ к галерее нужен, чтобы открыть ваш ролик для монтажа без копирования файла целиком.</string>
+	<string>Photo library access lets you open a video for editing without copying the entire file.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>Разрешение нужно, чтобы сохранить готовый ролик в вашу галерею.</string>
+	<string>This permission lets you save the finished video to your photo library.</string>
 
 	<!-- Сборка №20: apiks://share — «Поделиться → APIKS» открывает приложение. -->
 	<key>CFBundleURLTypes</key>

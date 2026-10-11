@@ -18,14 +18,14 @@ final class ShareViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = UIColor(white: 0, alpha: 0.4)
-        card.backgroundColor = UIColor(red: 0.08, green: 0.09, blue: 0.11, alpha: 1)
+        card.backgroundColor = UIColor(red: 42 / 255.0, green: 43 / 255.0, blue: 46 / 255.0, alpha: 1)
         card.layer.cornerRadius = 18
         card.translatesAutoresizingMaskIntoConstraints = false
         label.textColor = .white
         label.font = .systemFont(ofSize: 17, weight: .semibold)
         label.textAlignment = .center
         label.numberOfLines = 0
-        label.text = "Добавляю в APIKS…"
+        label.text = NSLocalizedString("Добавляю в APIKS…", comment: "Adding shared media")
         label.translatesAutoresizingMaskIntoConstraints = false
         spinner.color = .white
         spinner.translatesAutoresizingMaskIntoConstraints = false
@@ -49,7 +49,7 @@ final class ShareViewController: UIViewController {
 
     private func collect() {
         guard let base = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: ShareViewController.group) else {
-            finish("Не вышло: нет общей папки приложения", ok: false)
+            finish(NSLocalizedString("Не вышло: нет общей папки приложения", comment: "Missing shared app folder"), ok: false)
             return
         }
         let inbox = base.appendingPathComponent("Inbox", isDirectory: true)
@@ -90,11 +90,11 @@ final class ShareViewController: UIViewController {
         }
         group.notify(queue: .main) {
             if saved == 0 {
-                self.finish("Здесь нет видео, звука или фото", ok: false)
+                self.finish(NSLocalizedString("Здесь нет видео, звука или фото", comment: "No supported shared media"), ok: false)
             } else if self.openApp() {
-                self.finish("Добавлено в APIKS", ok: true, quick: true)
+                self.finish(NSLocalizedString("Добавлено в APIKS", comment: "Shared media added"), ok: true, quick: true)
             } else {
-                self.finish("Добавлено в APIKS — откройте приложение", ok: true)
+                self.finish(NSLocalizedString("Добавлено в APIKS — откройте приложение", comment: "Open app after sharing"), ok: true)
             }
         }
     }
