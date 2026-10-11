@@ -12,12 +12,12 @@ final class WrapperInputModeTests: XCTestCase {
         }
     }
 
-    func testTestFlightRestoresTheChosenOrdinaryMode() {
+    func testTestFlightUpgradeDoesNotRestoreTheOrdinaryMode() {
         let suite = "wrapper-input-test-" + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set("standard", forKey: WrapperInputMode.preferenceKey)
-        XCTAssertEqual(WrapperInputMode.load(defaults: defaults, comparisonAvailable: true), .standard)
+        XCTAssertEqual(WrapperInputMode.load(defaults: defaults, comparisonAvailable: true), .minimal)
     }
 
     func testNewOrInvalidComparisonPreferenceUsesMinimalMode() {

@@ -13,10 +13,9 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
     private var wrapperInputMode = WrapperInputMode.load(comparisonAvailable: canChooseSite)
     private var wrapperInputBaseline: WrapperInputBaseline!
     private var wrapperGestures: [UIGestureRecognizer] = []
-    private var offeredInputComparison = false
 
-    private let bgColor = UIColor(red: 32 / 255.0, green: 33 / 255.0, blue: 36 / 255.0, alpha: 1) // #202124
-    private let accent = UIColor(red: 118 / 255.0, green: 172 / 255.0, blue: 208 / 255.0, alpha: 1) // #76ACD0
+    private let bgColor = UIColor(white: 16 / 255.0, alpha: 1) // #101010
+    private let accent = UIColor(red: 205 / 255.0, green: 183 / 255.0, blue: 122 / 255.0, alpha: 1) // #cdb77a
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -25,26 +24,6 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
         setupProgress()
         setupOffline()
         clearWebCachesThenLoad()
-    }
-
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        guard canChooseSite, !offeredInputComparison else { return }
-        offeredInputComparison = true
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
-        let sheet = UIAlertController(title: NSLocalizedString("Проверка касаний", comment: "Touch comparison title"),
-            message: String(format: NSLocalizedString("Сборка %@ · %@\nСейчас: %@.\nСравните первый свайп после ножниц, выделения и ромбика. Чтобы сменить режим, полностью закройте и снова откройте приложение.", comment: "Touch comparison instructions"), build, rootUrl.path, wrapperInputMode.title),
-            preferredStyle: .alert)
-        for mode in [WrapperInputMode.minimal, .standard] {
-            sheet.addAction(UIAlertAction(title: mode.title, style: .default) { [weak self] _ in
-                guard let self = self else { return }
-                self.wrapperInputMode = mode
-                UserDefaults.standard.set(mode.rawValue, forKey: WrapperInputMode.preferenceKey)
-                self.configureWrapperInput()
-            })
-        }
-        sheet.addAction(UIAlertAction(title: String(format: NSLocalizedString("Продолжить: %@", comment: "Keep current input mode"), wrapperInputMode.title), style: .cancel, handler: nil))
-        present(sheet, animated: true)
     }
 
     // The iOS URLCache and WKWebsiteDataStore were holding stale index.html

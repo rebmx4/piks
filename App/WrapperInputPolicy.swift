@@ -13,10 +13,10 @@ enum WrapperInputMode: String {
     }
 
     static func load(defaults: UserDefaults = .standard, comparisonAvailable: Bool) -> WrapperInputMode {
-        // App Store always uses the mode accepted on the owner's iPhone.
-        // TestFlight may still restore the saved comparison preference.
-        guard comparisonAvailable else { return .minimal }
-        return defaults.string(forKey: preferenceKey).flatMap(WrapperInputMode.init(rawValue:)) ?? .minimal
+        // The comparison is complete: both App Store and TestFlight start in
+        // the mode accepted on the owner's iPhone, including upgrades with
+        // an old saved "standard" preference.
+        return .minimal
     }
 }
 

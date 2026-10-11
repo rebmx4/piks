@@ -1,6 +1,3 @@
-"Проверка касаний" = "Touch check";
-"Сборка %@ · %@\nСейчас: %@.\nСравните первый свайп после ножниц, выделения и ромбика. Чтобы сменить режим, полностью закройте и снова откройте приложение." = "Build %@ · %@\nCurrent mode: %@.\nCompare the first swipe after Split, Selection and Keyframe. To change the mode, fully close and reopen the app.";
-"Продолжить: %@" = "Continue: %@";
 "Упрощённая" = "Simplified";
 "Обычная" = "Standard";
 "Нет подключения к интернету" = "No internet connection";
