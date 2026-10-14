@@ -200,3 +200,36 @@ workflows:
     artifacts:
       - build/reverse-tests/test.log
       - build/reverse-tests/ReverseTests.xcresult
+
+  mac-preview-tests:
+    name: Piks preview frame regression tests (no IPA or publishing)
+    max_build_duration: 15
+    instance_type: mac_mini_m2
+    environment:
+      xcode: latest
+    scripts:
+      - name: Install XcodeGen
+        script: HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen
+      - name: Generate Xcode project
+        script: |
+          cd "$CM_BUILD_DIR"
+          xcodegen generate
+      - name: Test native preview frame recovery
+        script: |
+          set -e
+          cd "$CM_BUILD_DIR"
+          mkdir -p build/preview-tests
+          git rev-parse HEAD > build/preview-tests/source.txt
+          xcodebuild test -project Piks.xcodeproj -scheme ExportMacTests \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath build/preview-tests/derived \
+            -resultBundlePath build/preview-tests/PreviewTests.xcresult \
+            CODE_SIGNING_ALLOWED=NO > build/preview-tests/test.log 2>&1 || {
+              tail -n 100 build/preview-tests/test.log
+              exit 1
+            }
+          tail -n 20 build/preview-tests/test.log
+    artifacts:
+      - build/preview-tests/source.txt
+      - build/preview-tests/test.log
+      - build/preview-tests/PreviewTests.xcresult

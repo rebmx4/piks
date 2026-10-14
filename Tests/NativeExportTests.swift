@@ -1,8 +1,82 @@
 import XCTest
 import AVFoundation
 import CoreVideo
+import CoreImage
 
 final class NativeExportTests: XCTestCase {
+    private func scene(_ ranges: [(Double, Double)] = [(0, 2)]) -> RenderScene {
+        let items = ranges.map { at, end in
+            RenderScene.Item(trackID: 7, still: nil, at: at, end: end, k0: Int(at * 25),
+                frames: [[4, 0, 0, 4, 0, 0, 1]], pref: .identity, fx: nil, crop: nil, mask: [], ci: [])
+        }
+        return RenderScene(size: CGSize(width: 4, height: 4), fps: 25, layers: [items],
+                           overlays: [], grade: nil, luts: [])
+    }
+
+    private func pixelBuffer(red: UInt8) throws -> CVPixelBuffer {
+        var buffer: CVPixelBuffer?
+        XCTAssertEqual(CVPixelBufferCreate(nil, 4, 4, kCVPixelFormatType_32BGRA,
+            [kCVPixelBufferIOSurfacePropertiesKey as String: [:]] as CFDictionary, &buffer), kCVReturnSuccess)
+        let out = try XCTUnwrap(buffer)
+        CVPixelBufferLockBaseAddress(out, [])
+        defer { CVPixelBufferUnlockBaseAddress(out, []) }
+        let bytes = try XCTUnwrap(CVPixelBufferGetBaseAddress(out)).assumingMemoryBound(to: UInt8.self)
+        let row = CVPixelBufferGetBytesPerRow(out)
+        for y in 0..<4 { for x in 0..<4 {
+            let at = y * row + x * 4
+            bytes[at] = 0; bytes[at + 1] = 0; bytes[at + 2] = red; bytes[at + 3] = 255
+        } }
+        return out
+    }
+
+    private func red(_ image: CIImage) -> UInt8 {
+        var pixel = [UInt8](repeating: 0, count: 4)
+        pixel.withUnsafeMutableBytes { bytes in
+            CIContext(options: [.cacheIntermediates: false]).render(image,
+                toBitmap: bytes.baseAddress!, rowBytes: 4,
+                bounds: CGRect(x: 2, y: 2, width: 1, height: 1), format: .RGBA8,
+                colorSpace: CGColorSpaceCreateDeviceRGB())
+        }
+        return pixel[0]
+    }
+
+    func testMissingActiveVideoFrameIsAnError() throws {
+        XCTAssertThrowsError(try scene().compose(at: 0.2) { _ in nil },
+                             "missing decoded video must not be accepted as a successful black frame")
+    }
+
+    func testMissingFrameAfterBackwardSeekIsAnError() throws {
+        let scene = scene(), source = try pixelBuffer(red: 220)
+        XCTAssertGreaterThan(red(try scene.compose(at: 1.2) { _ in source }), 100)
+        XCTAssertThrowsError(try scene.compose(at: 0.4) { _ in nil },
+                             "a previous future frame cannot satisfy a backwards seek")
+    }
+
+    func testIntentionalGapDoesNotReuseAnOldClipFrame() throws {
+        let scene = scene([(0, 0.5)]), source = try pixelBuffer(red: 220)
+        _ = try scene.compose(at: 0.4) { _ in source }
+        XCTAssertEqual(red(try scene.compose(at: 0.8) { _ in nil }), 0,
+                       "an empty timeline interval must keep its intentional background")
+    }
+
+    func testMissingFrameCannotReuseThePreviousClip() throws {
+        let scene = scene([(0, 0.5), (0.5, 2)]), source = try pixelBuffer(red: 220)
+        _ = try scene.compose(at: 0.4) { _ in source }
+        XCTAssertThrowsError(try scene.compose(at: 0.52) { _ in nil },
+                             "a frame from another cut cannot replace the requested source")
+    }
+
+    func testOneForwardMissingFrameOfSameClipCanUseDecodedFrame() throws {
+        let scene = scene(), source = try pixelBuffer(red: 220)
+        _ = try scene.compose(at: 0.12) { _ in source }
+        XCTAssertGreaterThan(red(try scene.compose(at: 0.16) { _ in nil }), 100)
+    }
+
+    func testDecodedBlackVideoFrameIsNotAnError() throws {
+        let scene = scene(), source = try pixelBuffer(red: 0)
+        XCTAssertEqual(red(try scene.compose(at: 0.2) { _ in source }), 0)
+    }
+
     func testOutputPixelBufferPoolCanAllocateAFrame() throws {
         var attributes = RyndiCompositor().requiredPixelBufferAttributesForRenderContext
         attributes[kCVPixelBufferWidthKey as String] = 720
