@@ -36,6 +36,9 @@ final class NativePlayback: NSObject {
     private var lastSent = 0.0
     private var wantPlay = false                 // пауза пришла, пока шла перемотка к началу, — не запускать
     private var startSeq = 0                      // номер запуска: прерванная перемотка не запускает
+    private var seekSeq = 0
+    private var seekTarget: Double?
+    private var lastPosition = 0.0
     private var statusWatch: NSKeyValueObservation?
     private var failToken: NSObjectProtocol?
     private var endToken: NSObjectProtocol?
@@ -63,11 +66,14 @@ final class NativePlayback: NSObject {
     @objc private func servicesReset() {
         DispatchQueue.main.async {
             guard self.key != nil || self.loadingKey != nil else { return }
+            // После сброса/удаления item AVPlayer уже может отдавать 0.
+            // Последняя позиция сохраняется по его тикам и запросам перемотки.
+            let position = self.seekTarget ?? self.lastPosition
             self.gen += 1
             self.loadingKey = nil
             self.forget()
             self.player.replaceCurrentItem(with: nil)
-            self.failed("медиаслужба телефона перезапустилась")
+            self.failed("медиаслужба телефона перезапустилась", at: position)
         }
     }
 
@@ -155,6 +161,8 @@ final class NativePlayback: NSObject {
     }
 
     private func install(_ a: PlanAssembly, key newKey: String, temps fresh: TempFiles) {
+        seekSeq += 1
+        seekTarget = nil
         // Шла игра — сначала пауза: странице — где встали (она тоже встанет).
         if player.rate != 0 || wantPlay {
             wantPlay = false
@@ -172,20 +180,24 @@ final class NativePlayback: NSObject {
         player.replaceCurrentItem(with: item)
         endToken = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
-            guard let self = self else { return }
+            guard let self = self, self.player.currentItem === item else { return }
             self.wantPlay = false
             self.stopLink()
             self.send?(["event": "play-ended", "t": self.seconds()])
         }
         failToken = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemFailedToPlayToEndTime, object: item, queue: .main) { [weak self] note in
+            guard let self = self, self.player.currentItem === item else { return }
             let err = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
-            self?.failed(err?.localizedDescription ?? "видео не доиграло")
+            self.failed(err?.localizedDescription ?? "видео не доиграло")
         }
         statusWatch = item.observe(\.status, options: [.new]) { [weak self] it, _ in
             guard it.status == .failed else { return }
             let reason = it.error?.localizedDescription ?? "видео не открылось"
-            DispatchQueue.main.async { self?.failed(reason) }
+            DispatchQueue.main.async {
+                guard let self = self, self.player.currentItem === it else { return }
+                self.failed(reason)
+            }
         }
         temps.removeAll()
         temps = fresh
@@ -203,13 +215,18 @@ final class NativePlayback: NSObject {
     }
 
     // Элемент не играет — странице ошибку (она сыграет сама), план — заново.
-    private func failed(_ reason: String) {
+    private func failed(_ reason: String, at position: Double? = nil) {
+        var event: [String: Any] = ["event": "play-error", "reason": reason, "t": position ?? seekTarget ?? seconds()]
+        if let key = key { event["key"] = key }
         wantPlay = false
         player.pause()
         stopLink()
-        view.isHidden = true
+        // Последняя картинка остаётся до play-hide: страница сначала
+        // декодирует и рисует нужный кадр резервного проигрывателя.
         key = nil
-        send?(["event": "play-error", "reason": reason])
+        seekSeq += 1
+        seekTarget = nil
+        send?(event)
     }
 
     private func seconds() -> Double {
@@ -228,9 +245,14 @@ final class NativePlayback: NSObject {
         wantPlay = true
         startSeq += 1
         let mySeq = startSeq
+        seekSeq += 1
+        let mySeek = seekSeq
+        seekTarget = max(0, t)
+        lastPosition = max(0, t)
         player.seek(to: NativePlayback.time(t), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
             DispatchQueue.main.async {
                 guard let self = self, self.wantPlay, finished, mySeq == self.startSeq else { return }
+                if mySeek == self.seekSeq { self.seekTarget = nil }
                 self.view.isHidden = false
                 self.player.play()
                 self.startLink()
@@ -241,6 +263,7 @@ final class NativePlayback: NSObject {
 
     func pause() {
         wantPlay = false
+        if seekTarget == nil { lastPosition = seconds() }
         player.pause()
         stopLink()
         send?(["event": "play-paused", "t": seconds()])
@@ -248,7 +271,16 @@ final class NativePlayback: NSObject {
 
     func seek(_ t: Double) {
         let small = CMTime(value: 1, timescale: 30)
-        player.seek(to: NativePlayback.time(t), toleranceBefore: small, toleranceAfter: small)
+        seekSeq += 1
+        let mySeek = seekSeq
+        seekTarget = max(0, t)
+        lastPosition = max(0, t)
+        player.seek(to: NativePlayback.time(t), toleranceBefore: small, toleranceAfter: small) { [weak self] finished in
+            DispatchQueue.main.async {
+                guard let self = self, finished, mySeek == self.seekSeq else { return }
+                self.seekTarget = nil
+            }
+        }
     }
 
     func hide() {
@@ -256,6 +288,8 @@ final class NativePlayback: NSObject {
     }
 
     func stop() {
+        seekSeq += 1
+        seekTarget = nil
         wantPlay = false
         player.pause()
         stopLink()
@@ -293,6 +327,7 @@ final class NativePlayback: NSObject {
         let now = CACurrentMediaTime()
         if now - lastSent < 0.03 { return }
         lastSent = now
-        send?(["event": "play-time", "t": seconds(), "rate": Double(player.rate)])
+        lastPosition = seconds()
+        send?(["event": "play-time", "t": lastPosition, "rate": Double(player.rate)])
     }
 }

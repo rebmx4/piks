@@ -291,6 +291,12 @@ final class RenderScene {
     let ci: [ExportPlan.CiStep]         // ко всему кадру, под надписями
     private var lastMain: CIImage?      // основной слой, если кадра на стыке нет
     private var lastK = -1_000_000       // номер кадра lastMain: после перемотки он чужой
+    private struct MainSpan: Equatable {
+        let trackID: CMPersistentTrackID
+        let at: Double
+        let end: Double
+    }
+    private var lastMainSpans: [MainSpan] = []
 
     init(size: CGSize, fps: Double, layers: [[Item]], overlays: [Overlay], grade: [Double]?, luts: [Data],
          ci: [ExportPlan.CiStep] = []) {
@@ -304,24 +310,36 @@ final class RenderScene {
     }
 
     // Вызывается только с очереди композитора — по одному кадру за раз.
-    func compose(at t: Double, frame: (CMPersistentTrackID) -> CVPixelBuffer?) -> CIImage {
+    func compose(at t: Double, frame: (CMPersistentTrackID) -> CVPixelBuffer?) throws -> CIImage {
         let bounds = CGRect(origin: .zero, size: size)
         var out = CIImage(color: CIColor(red: 0, green: 0, blue: 0)).cropped(to: bounds)
         let k = Int((t * fps).rounded())
         for (index, layer) in layers.enumerated() {
             // Куски слоя в этот миг: обычно один, при переходе — два (нахлёст).
             var placed: CIImage? = nil
-            for item in RenderScene.items(in: layer, at: t) {
-                guard let image = render(item, at: t, k: k, frame: frame) else { continue }
+            let activeItems = RenderScene.items(in: layer, at: t)
+            var complete = true
+            for item in activeItems {
+                guard let image = render(item, at: t, k: k, frame: frame) else { complete = false; continue }
                 placed = placed.map { image.composited(over: $0) } ?? image
             }
             if index == 0 {
-                // Основной слой не пустеет: на стыке кусков или в последнем
-                // кадре держим прошлый кадр, а не вспышку чёрного.
-                if let image = placed { lastMain = image; lastK = k }
-                // Экспорт идёт по порядку — держим, как раньше (до 2 с); проигрыватель
-                // перемотал назад или далеко — прошлый кадр чужой.
-                else if k >= lastK && k - lastK <= Int(fps * 2) { placed = lastMain }
+                let spans = activeItems.map { MainSpan(trackID: $0.trackID, at: $0.at, end: $0.end) }
+                if complete, let image = placed {
+                    lastMain = image; lastK = k; lastMainSpans = spans
+                } else if !complete, spans == lastMainSpans, k >= lastK, k - lastK <= 1,
+                          let previous = lastMain {
+                    // Один пропуск вперёд внутри тех же клипов. После перемотки,
+                    // смены куска или долгого отказа прежний кадр уже не подходит.
+                    placed = previous
+                } else if !complete {
+                    throw ExportError("нет видеокадра основного клипа на \(String(format: "%.3f", t)) с")
+                } else {
+                    // Пустой интервал — настоящий фон, без кадра старого клипа.
+                    lastMain = nil; lastK = -1_000_000; lastMainSpans = []
+                }
+            } else if !complete {
+                throw ExportError("нет видеокадра слоя \(index + 1) на \(String(format: "%.3f", t)) с")
             }
             if let image = placed { out = image.composited(over: out) }
         }
@@ -635,7 +653,9 @@ final class RyndiCompositor: NSObject, AVVideoCompositing {
                 }
                 let scene = instruction.scene
                 let t = CMTimeGetSeconds(request.compositionTime)
-                let image = scene.compose(at: t) { request.sourceFrame(byTrackID: $0) }
+                let image: CIImage
+                do { image = try scene.compose(at: t) { request.sourceFrame(byTrackID: $0) } }
+                catch { request.finish(with: error); return }
                 RyndiCompositor.context.render(image, to: out,
                                                bounds: CGRect(origin: .zero, size: scene.size),
                                                colorSpace: nil)

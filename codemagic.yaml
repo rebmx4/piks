@@ -12,6 +12,7 @@ workflows:
       vars:
         XCODE_SCHEME: "App"
         BUNDLE_ID: "com.piks.app"
+        RYNDI_REUSE_REVERSE_FROM: "6ac74727d8dbd069398bbc5d"
     # Автозапуск по отправке в main отключён по решению владельца 23.09.2026:
     # агент готовит сборку, владелец запускает её сам кнопкой «Start new build».
     # Чтобы вернуть автозапуск — раскомментировать блок ниже.

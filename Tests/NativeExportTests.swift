@@ -77,6 +77,21 @@ final class NativeExportTests: XCTestCase {
         XCTAssertEqual(red(try scene.compose(at: 0.2) { _ in source }), 0)
     }
 
+    func testMissingOverlayFrameDoesNotProduceAPartialComposition() throws {
+        let base = scene(), source = try pixelBuffer(red: 220)
+        let overlay = RenderScene.Item(trackID: 8, still: nil, at: 0, end: 2, k0: 0,
+            frames: [[4, 0, 0, 4, 0, 0, 1]], pref: .identity, fx: nil, crop: nil, mask: [], ci: [])
+        let layered = RenderScene(size: base.size, fps: base.fps, layers: [base.layers[0], [overlay]],
+                                  overlays: [], grade: nil, luts: [])
+        XCTAssertThrowsError(try layered.compose(at: 0.2) { track in track == 7 ? source : nil })
+    }
+
+    func testProlongedMissingFrameCannotFreezeAnOldImage() throws {
+        let scene = scene(), source = try pixelBuffer(red: 220)
+        _ = try scene.compose(at: 0.12) { _ in source }
+        XCTAssertThrowsError(try scene.compose(at: 0.24) { _ in nil })
+    }
+
     func testOutputPixelBufferPoolCanAllocateAFrame() throws {
         var attributes = RyndiCompositor().requiredPixelBufferAttributesForRenderContext
         attributes[kCVPixelBufferWidthKey as String] = 720
