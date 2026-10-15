@@ -298,7 +298,7 @@ final class RenderScene {
     let ci: [ExportPlan.CiStep]         // ко всему кадру, под надписями
     let presentation: ExportPresentation?
     private var lastMain: CIImage?      // основной слой, если кадра на стыке нет
-    private var lastK = -1_000_000       // номер кадра lastMain: после перемотки он чужой
+    private var lastK = -1_000_000       // выходной кадр lastMain: после перемотки он чужой
     private struct MainSpan: Equatable {
         let trackID: CMPersistentTrackID
         let at: Double
@@ -326,6 +326,7 @@ final class RenderScene {
         let bounds = CGRect(origin: .zero, size: size)
         var out = CIImage(color: CIColor(red: 0, green: 0, blue: 0)).cropped(to: bounds)
         let k = Int((t * fps).rounded())
+        let outputK = Int((outputTime * fps).rounded())
         for (index, layer) in layers.enumerated() {
             // Куски слоя в этот миг: обычно один, при переходе — два (нахлёст).
             var placed: CIImage? = nil
@@ -338,8 +339,8 @@ final class RenderScene {
             if index == 0 {
                 let spans = activeItems.map { MainSpan(trackID: $0.trackID, at: $0.at, end: $0.end) }
                 if complete, let image = placed {
-                    lastMain = image; lastK = k; lastMainSpans = spans
-                } else if !complete, spans == lastMainSpans, k >= lastK, k - lastK <= 1,
+                    lastMain = image; lastK = outputK; lastMainSpans = spans
+                } else if !complete, spans == lastMainSpans, outputK >= lastK, outputK - lastK <= 1,
                           let previous = lastMain {
                     // Один пропуск вперёд внутри тех же клипов. После перемотки,
                     // смены куска или долгого отказа прежний кадр уже не подходит.

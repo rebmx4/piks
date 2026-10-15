@@ -4,13 +4,14 @@ import CoreVideo
 import CoreImage
 
 final class NativeExportTests: XCTestCase {
-    private func scene(_ ranges: [(Double, Double)] = [(0, 2)]) -> RenderScene {
+    private func scene(_ ranges: [(Double, Double)] = [(0, 2)],
+                       presentation: ExportPresentation? = nil) -> RenderScene {
         let items = ranges.map { at, end in
             RenderScene.Item(trackID: 7, still: nil, at: at, end: end, k0: Int(at * 25),
                 frames: [[4, 0, 0, 4, 0, 0, 1]], pref: .identity, fx: nil, crop: nil, mask: [], ci: [])
         }
         return RenderScene(size: CGSize(width: 4, height: 4), fps: 25, layers: [items],
-                           overlays: [], grade: nil, luts: [])
+                           overlays: [], grade: nil, luts: [], presentation: presentation)
     }
 
     private func pixelBuffer(red: UInt8) throws -> CVPixelBuffer {
@@ -70,6 +71,25 @@ final class NativeExportTests: XCTestCase {
         let scene = scene(), source = try pixelBuffer(red: 220)
         _ = try scene.compose(at: 0.12) { _ in source }
         XCTAssertGreaterThan(red(try scene.compose(at: 0.16) { _ in nil }), 100)
+    }
+
+    func testAcceleratedExportCanBridgeOneMissingOutputFrame() throws {
+        let presentation = try XCTUnwrap(ExportPresentation(json:
+            ["rate": 1.1, "foregroundScale": 0.9, "backgroundGain": 0.5]))
+        let scene = scene(presentation: presentation), source = try pixelBuffer(red: 220)
+        _ = try scene.compose(at: 0.16) { _ in source }
+        // Source indices jump 4 -> 6, but only one output frame is missing.
+        XCTAssertNoThrow(try scene.compose(at: 0.20) { _ in nil })
+        XCTAssertThrowsError(try scene.compose(at: 0.24) { _ in nil })
+    }
+
+    func testSlowerExportCannotFreezeSeveralMissingOutputFrames() throws {
+        let presentation = try XCTUnwrap(ExportPresentation(json:
+            ["rate": 0.5, "foregroundScale": 0.9, "backgroundGain": 0.5]))
+        let scene = scene(presentation: presentation), source = try pixelBuffer(red: 220)
+        _ = try scene.compose(at: 0.16) { _ in source }
+        XCTAssertNoThrow(try scene.compose(at: 0.20) { _ in nil })
+        XCTAssertThrowsError(try scene.compose(at: 0.24) { _ in nil })
     }
 
     func testDecodedBlackVideoFrameIsNotAnError() throws {
