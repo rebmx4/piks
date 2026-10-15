@@ -117,6 +117,7 @@ struct ExportPlan {
     let masks: [Data]               // маски кусков: PNG
     let ci: [CiStep]                // фильтры ко всему кадру
     let save: Bool
+    let presentation: ExportPresentation?
 
     static let lutN = 33
 
@@ -131,6 +132,12 @@ struct ExportPlan {
         bitrate = ExportPlan.int(json["bitrate"]) ?? 8_000_000
         codec = (json["codec"] as? String) ?? "hevc"
         save = (json["save"] as? Bool) ?? true
+        if let raw = json["presentation"] {
+            guard let object = raw as? [String: Any], let value = ExportPresentation(json: object) else { return nil }
+            presentation = value
+        } else {
+            presentation = nil
+        }
 
         var urls: [String: String] = [:]
         for entry in (json["media"] as? [[String: Any]]) ?? [] {
@@ -289,6 +296,7 @@ final class RenderScene {
     let grade: [Double]?
     let luts: [Data]
     let ci: [ExportPlan.CiStep]         // ко всему кадру, под надписями
+    let presentation: ExportPresentation?
     private var lastMain: CIImage?      // основной слой, если кадра на стыке нет
     private var lastK = -1_000_000       // номер кадра lastMain: после перемотки он чужой
     private struct MainSpan: Equatable {
@@ -299,7 +307,7 @@ final class RenderScene {
     private var lastMainSpans: [MainSpan] = []
 
     init(size: CGSize, fps: Double, layers: [[Item]], overlays: [Overlay], grade: [Double]?, luts: [Data],
-         ci: [ExportPlan.CiStep] = []) {
+         ci: [ExportPlan.CiStep] = [], presentation: ExportPresentation? = nil) {
         self.size = size
         self.fps = fps
         self.layers = layers
@@ -307,10 +315,14 @@ final class RenderScene {
         self.grade = grade
         self.luts = luts
         self.ci = ci
+        self.presentation = presentation
     }
 
     // Вызывается только с очереди композитора — по одному кадру за раз.
-    func compose(at t: Double, frame: (CMPersistentTrackID) -> CVPixelBuffer?) throws -> CIImage {
+    func compose(at outputTime: Double, frame: (CMPersistentTrackID) -> CVPixelBuffer?) throws -> CIImage {
+        // Tracks use the output clock; matrices, effects, masks and captions
+        // are sampled on the unchanged montage clock.
+        let t = outputTime * (presentation?.rate ?? 1)
         let bounds = CGRect(origin: .zero, size: size)
         var out = CIImage(color: CIColor(red: 0, green: 0, blue: 0)).cropped(to: bounds)
         let k = Int((t * fps).rounded())
@@ -347,7 +359,8 @@ final class RenderScene {
         for o in overlays where t + 1e-6 >= o.at && t + 1e-6 < o.end {
             out = o.image.composited(over: out)
         }
-        return out.cropped(to: bounds)
+        let image = out.cropped(to: bounds)
+        return presentation?.frame(image, in: bounds) ?? image
     }
 
     // Кадр куска на выходе: обрезка -> цвет -> фильтры -> матрица -> маска ->
@@ -945,6 +958,10 @@ final class NativeExporter {
         }
 
         // Звук: кусок на первую свободную к его началу дорожку.
+        func mixTime(_ seconds: Double) -> CMTime {
+            let original = time(seconds)
+            return plan.presentation?.outputTime(original) ?? original
+        }
         var audioTracks: [AVMutableCompositionTrack] = []
         var params: [CMPersistentTrackID: AVMutableAudioMixInputParameters] = [:]
         for s in plan.sounds {
@@ -978,17 +995,17 @@ final class NativeExporter {
                 var cursor = s.at
                 // Уровень в начале — отдельно, только если первый переход
                 // начинается позже: пересекаться с ним не должен.
-                if s.keys[0].at > s.at + 0.001 { p.setVolume(Float(gain(cursor) * k), at: start) }
+                if s.keys[0].at > s.at + 0.001 { p.setVolume(Float(gain(cursor) * k), at: mixTime(s.at)) }
                 for i in 0..<(s.keys.count - 1) {
                     let from = max(s.keys[i].at, cursor), to = min(s.keys[i + 1].at, end)
                     if to - from < 0.001 { continue }
                     p.setVolumeRamp(fromStartVolume: Float(gain(from) * k), toEndVolume: Float(gain(to) * k),
-                                    timeRange: CMTimeRange(start: time(from), end: time(to)))
+                                    timeRange: CMTimeRange(start: mixTime(from), end: mixTime(to)))
                     cursor = to
                 }
-                if cursor < end - 0.001 { p.setVolume(Float(gain(cursor) * k), at: time(cursor)) }
+                if cursor < end - 0.001 { p.setVolume(Float(gain(cursor) * k), at: mixTime(cursor)) }
             } else {
-                p.setVolume(Float(s.volume * k), at: start)
+                p.setVolume(Float(s.volume * k), at: mixTime(s.at))
             }
             params[track.trackID] = p
         }
@@ -1009,9 +1026,15 @@ final class NativeExporter {
             overlays.append(RenderScene.Overlay(image: img.transformed(by: tr), at: o.at, end: o.at + o.dur))
         }
 
+        let outputTotal = plan.presentation?.outputTime(total) ?? total
+        if let presentation = plan.presentation {
+            let sourceSpan = CMTimeCompare(comp.duration, total) > 0 ? comp.duration : total
+            comp.scaleTimeRange(CMTimeRange(start: .zero, duration: sourceSpan),
+                                toDuration: presentation.outputTime(sourceSpan))
+        }
         let scene = RenderScene(size: CGSize(width: plan.width, height: plan.height), fps: Double(plan.fps),
                                 layers: sceneLayers, overlays: overlays, grade: plan.grade, luts: plan.luts,
-                                ci: plan.ci)
+                                ci: plan.ci, presentation: plan.presentation)
         let vc = AVMutableVideoComposition()
         vc.customVideoCompositorClass = RyndiCompositor.self
         vc.renderSize = scene.size
@@ -1019,10 +1042,10 @@ final class NativeExporter {
         vc.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
         vc.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
         vc.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
-        let span = CMTimeCompare(comp.duration, total) > 0 ? comp.duration : total
+        let span = CMTimeCompare(comp.duration, outputTotal) > 0 ? comp.duration : outputTotal
         vc.instructions = [RyndiInstruction(timeRange: CMTimeRange(start: CMTime.zero, duration: span),
                                             trackIDs: videoIDs, scene: scene)]
-        return PlanAssembly(comp: comp, video: vc, mix: mix, total: total, loud: loud)
+        return PlanAssembly(comp: comp, video: vc, mix: mix, total: outputTotal, loud: loud)
     }
 
     private func videoSettings(_ codec: AVVideoCodecType) -> [String: Any] {
@@ -1051,6 +1074,9 @@ final class NativeExporter {
 
         // Запись. HEVC, если телефон его пишет, иначе H.264.
         let writer = try AVAssetWriter(outputURL: out, fileType: .mp4)
+        // New encoding only: no source descriptive or track-level metadata.
+        // Codec, color and timing information remains part of the media format.
+        writer.metadata = []
         writer.shouldOptimizeForNetworkUse = true
         var codec: AVVideoCodecType = plan.codec == "h264" ? .h264 : .hevc
         var vs = videoSettings(codec)
@@ -1059,6 +1085,7 @@ final class NativeExporter {
             vs = videoSettings(codec)
         }
         let videoIn = AVAssetWriterInput(mediaType: .video, outputSettings: vs)
+        videoIn.metadata = []
         videoIn.expectsMediaDataInRealTime = false
         guard writer.canAdd(videoIn) else { throw ExportError("кодировщик видео не запускается") }
         writer.add(videoIn)
@@ -1096,6 +1123,7 @@ final class NativeExporter {
                 AVLinearPCMIsNonInterleaved: false,
             ]
             let input = AVAssetWriterInput(mediaType: .audio, outputSettings: aac)
+            input.metadata = []
             input.expectsMediaDataInRealTime = false
             // Громче 100 % — сведённое читается в Float32 и усиливается в pump.
             let output = AVAssetReaderAudioMixOutput(audioTracks: audioTracks,

@@ -114,7 +114,9 @@ targets:
     deploymentTarget: "12.0"
     sources:
       - path: Tests/NativeExportTests.swift
+      - path: Tests/ExportPresentationTests.swift
       - path: App/NativeExport.swift
+      - path: App/ExportPresentation.swift
       - path: App/ExportAudio.swift
       - path: App/ExportDiagnostics.swift
       - path: Tests/Fixtures
