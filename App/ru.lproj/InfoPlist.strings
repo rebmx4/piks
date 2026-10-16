@@ -1,5 +1,5 @@
 /* Russian localization for Info.plist */
-"CFBundleDisplayName" = "Piks";
+"CFBundleDisplayName" = "Apiks";
 "NSCameraUsageDescription" = "Камера нужна, чтобы снять фото прямо в редакторе для дальнейшей обработки.";
 "NSMicrophoneUsageDescription" = "Микрофон нужен, чтобы записать голос прямо в редакторе.";
 "NSPhotoLibraryUsageDescription" = "Доступ к галерее нужен, чтобы открыть ваш ролик для монтажа без копирования файла целиком.";

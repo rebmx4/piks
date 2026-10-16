@@ -1,5 +1,5 @@
 /* English localization for Info.plist */
-"CFBundleDisplayName" = "Piks";
+"CFBundleDisplayName" = "Apiks";
 "NSCameraUsageDescription" = "The camera lets you take a photo right in the editor to edit it.";
 "NSMicrophoneUsageDescription" = "The microphone lets you record your voice in the editor.";
 "NSPhotoLibraryUsageDescription" = "Photo library access lets you open a video for editing without copying the entire file.";
