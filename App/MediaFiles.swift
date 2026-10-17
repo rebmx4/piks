@@ -222,7 +222,7 @@ extension MediaBridge {
     static func audioSession(_ mode: String?) {
         let session = AVAudioSession.sharedInstance()
         if mode == "record" {
-            try? session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothA2DP])
+            try? session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP])
         } else {
             try? session.setCategory(.playback, mode: .moviePlayback, options: [])
         }
