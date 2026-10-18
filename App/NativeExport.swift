@@ -934,12 +934,13 @@ final class NativeExporter {
         // наибольшую, сведённый звук усиливается на неё в run.
         let loud = max(1, plan.sounds.map { s in max(s.volume, s.keys.map { $0.g }.max() ?? 0) }.max() ?? 1)
         let k = 1 / loud
-        var stereo: [String: AVAssetTrack] = [:]
-        func audioSource(_ s: ExportPlan.Sound) -> AVAssetTrack? {
+        typealias AudioSource = (asset: AVURLAsset, track: AVAssetTrack)
+        var stereo: [String: AudioSource] = [:]
+        func audioSource(_ s: ExportPlan.Sound) -> AudioSource? {
             guard let a = asset(s.media), let t = a.tracks(withMediaType: .audio).first else { return nil }
             let ch = ExportAudio.channels(t)
             let mode = ch == 1 ? "M" : (ch == 2 && (s.ear == "L" || s.ear == "R")) ? (s.ear ?? "") : ""
-            if mode.isEmpty { return t }
+            if mode.isEmpty { return (a, t) }
             let key = s.media.filter { $0.isLetter || $0.isNumber } + "-" + mode
             if let ready = stereo[key] { return ready }
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("ryndi-stereo-\(key)-\(temps.tag).caf")
@@ -948,14 +949,16 @@ final class NativeExporter {
                 temps.urls.append(url)
                 let copy = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
                 if let ct = copy.tracks(withMediaType: .audio).first {
-                    stereo[key] = ct
-                    return ct
+                    let source: AudioSource = (copy, ct)
+                    stereo[key] = source
+                    return source
                 }
             } catch {
                 NSLog("ryndi: стереокопия звука %@ не вышла: %@", key, error.localizedDescription)
             }
-            stereo[key] = t                  // не вышло — как раньше, второй раз не пробуем
-            return t
+            let source: AudioSource = (a, t)
+            stereo[key] = source             // не вышло — как раньше, второй раз не пробуем
+            return source
         }
 
         // Звук: кусок на первую свободную к его началу дорожку.
@@ -966,7 +969,7 @@ final class NativeExporter {
         var audioTracks: [AVMutableCompositionTrack] = []
         var params: [CMPersistentTrackID: AVMutableAudioMixInputParameters] = [:]
         for s in plan.sounds {
-            guard let src = audioSource(s) else { continue }
+            guard let source = audioSource(s) else { continue }
             let start = time(s.at)
             var chosen: AVMutableCompositionTrack? = nil
             for t in audioTracks where CMTimeCompare(ends[t.trackID] ?? CMTime.zero, start) <= 0 {
@@ -979,7 +982,10 @@ final class NativeExporter {
                 chosen = made
             }
             guard let track = chosen else { continue }
-            try place(track, src, at: s.at, from: s.from, dur: s.dur, srcDur: s.src, ends: &ends)
+            // AVAssetTrack.asset — слабая ссылка; владелец CAF нужен до конца вставки.
+            try withExtendedLifetime(source.asset) {
+                try place(track, source.track, at: s.at, from: s.from, dur: s.dur, srcDur: s.src, ends: &ends)
+            }
             let p = params[track.trackID] ?? AVMutableAudioMixInputParameters(track: track)
             if s.keys.count >= 2 {
                 // Точки громкости: уровень в начале куска, дальше между
