@@ -171,6 +171,24 @@ workflows:
       - build/wrapper-tests/test.log
       - build/wrapper-tests/WrapperInputTests.xcresult
 
+  ios-update-tests:
+    name: Piks update notice tests (no IPA or publishing)
+    max_build_duration: 20
+    instance_type: mac_mini_m2
+    environment:
+      xcode: latest
+    scripts:
+      - name: Install XcodeGen
+        script: HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen
+      - name: Generate Xcode project
+        script: |
+          cd "$CM_BUILD_DIR"
+          xcodegen generate
+      - *wrapper_tests
+    artifacts:
+      - build/wrapper-tests/test.log
+      - build/wrapper-tests/WrapperInputTests.xcresult
+
   mac-native-tests:
     name: Piks AVFoundation tests on Mac (no IPA or publishing)
     max_build_duration: 30

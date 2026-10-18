@@ -73,6 +73,7 @@ targets:
     sources:
       - path: Tests/WrapperInputUITests.swift
       - path: Tests/WrapperInputModeTests.swift
+      - path: Tests/AppUpdateUITests.swift
       - path: App/WrapperInputPolicy.swift
     settings:
       base:
