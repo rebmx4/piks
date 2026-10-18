@@ -5,6 +5,8 @@ import WebKit
 @main
 final class WrapperProbeApp: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
+    private var updatePresenter: AppUpdatePresenter?
+    private var publishOnBackground: (() -> Void)?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         let mode = ProcessInfo.processInfo.arguments.contains("standard") ? WrapperInputMode.standard : .minimal
@@ -27,7 +29,55 @@ final class WrapperProbeApp: UIResponder, UIApplicationDelegate {
         window.rootViewController = host
         window.makeKeyAndVisible()
         self.window = window
+        let arguments = ProcessInfo.processInfo.arguments
+        if let index = arguments.firstIndex(of: "--app-update"), index + 1 < arguments.count {
+            installUpdateProbe(arguments[index + 1], host: host,
+                               reset: arguments.contains("--reset-update-dismissal"))
+        }
         return true
+    }
+
+    private func installUpdateProbe(_ scenario: String, host: UIViewController, reset: Bool) {
+        let defaults = UserDefaults(suiteName: "com.piks.update-probe")!
+        if reset { defaults.removePersistentDomain(forName: "com.piks.update-probe") }
+        var data = try! UpdateFixture.data(version: ["same", "foreground"].contains(scenario) ? "1.0.1" : "1.0.2")
+        var clock = Date()
+        let session = UpdateTestProtocol.session { _ in
+            if scenario == "offline" { throw URLError(.notConnectedToInternet) }
+            return (200, data)
+        }
+        let checker = AppUpdateChecker(installedVersion: "1.0.1", systemVersion: "17.0",
+            region: "ru", session: session, defaults: defaults, now: { clock })
+        if scenario == "foreground" {
+            publishOnBackground = {
+                data = try! UpdateFixture.data()
+                clock = clock.addingTimeInterval(901)
+            }
+        }
+        let completed = UILabel()
+        completed.text = "Checking for update"
+        let opened = UILabel()
+        opened.text = "Store not opened"
+        let labels = UIStackView(arrangedSubviews: [completed, opened])
+        labels.axis = .vertical
+        labels.translatesAutoresizingMaskIntoConstraints = false
+        host.view.addSubview(labels)
+        NSLayoutConstraint.activate([
+            labels.leadingAnchor.constraint(equalTo: host.view.leadingAnchor, constant: 8),
+            labels.bottomAnchor.constraint(equalTo: host.view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
+        ])
+        let presenter = AppUpdatePresenter(host: host, checker: checker, openStore: { opened.text = $0.absoluteString })
+        updatePresenter = presenter
+        Task {
+            await presenter.refresh()
+            completed.text = "Update check complete"
+            completed.accessibilityIdentifier = "update-check-complete"
+        }
+    }
+
+    func applicationWillResignActive(_ application: UIApplication) {
+        publishOnBackground?()
+        publishOnBackground = nil
     }
 
     private static let html = #"""

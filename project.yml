@@ -59,6 +59,11 @@ targets:
     sources:
       - path: Tests/WrapperProbeApp.swift
       - path: App/WrapperInputPolicy.swift
+      - path: App/AppUpdate.swift
+      - path: App/AppUpdateBanner.swift
+      - path: Tests/UpdateTestSupport.swift
+      - path: Tests/UpdateFixtures
+        type: folder
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.piks.wrapper.probe
@@ -74,6 +79,11 @@ targets:
       - path: Tests/WrapperInputUITests.swift
       - path: Tests/WrapperInputModeTests.swift
       - path: Tests/AppUpdateUITests.swift
+      - path: Tests/AppUpdateTests.swift
+      - path: App/AppUpdate.swift
+      - path: Tests/UpdateTestSupport.swift
+      - path: Tests/UpdateFixtures
+        type: folder
       - path: App/WrapperInputPolicy.swift
     settings:
       base:

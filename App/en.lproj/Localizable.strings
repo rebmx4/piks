@@ -6,3 +6,7 @@
 "Рабочая (/ryn/)" = "Stable (/ryn/)";
 "Тестовая (/ryn-next/)" = "Preview (/ryn-next/)";
 "Отмена" = "Cancel";
+"Доступно обновление" = "Update available";
+"Версия %@" = "Version %@";
+"Обновить" = "Update";
+"Закрыть уведомление" = "Dismiss update notice";

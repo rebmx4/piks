@@ -13,6 +13,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
     private var wrapperInputMode = WrapperInputMode.load(comparisonAvailable: canChooseSite)
     private var wrapperInputBaseline: WrapperInputBaseline!
     private var wrapperGestures: [UIGestureRecognizer] = []
+    private var appUpdatePresenter: AppUpdatePresenter?
 
     private let bgColor = UIColor(white: 16 / 255.0, alpha: 1) // #101010
     private let accent = UIColor(red: 205 / 255.0, green: 183 / 255.0, blue: 122 / 255.0, alpha: 1) // #cdb77a
@@ -24,6 +25,8 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
         setupProgress()
         setupOffline()
         clearWebCachesThenLoad()
+        appUpdatePresenter = AppUpdatePresenter(host: self)
+        Task { [weak self] in await self?.appUpdatePresenter?.refresh() }
     }
 
     // The iOS URLCache and WKWebsiteDataStore were holding stale index.html

@@ -50,4 +50,14 @@ final class AppUpdateUITests: XCTestCase {
             app.terminate()
         }
     }
+
+    func testReturnToForegroundChecksForAPublishedUpdate() {
+        launch("foreground")
+        XCTAssertTrue(app.staticTexts["update-check-complete"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["app-update-open"].exists)
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        XCTAssertTrue(app.buttons["app-update-open"].waitForExistence(timeout: 5),
+                      "Returning to the app must check for a newer public version")
+    }
 }
