@@ -24,41 +24,9 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
         setupWebView()
         setupProgress()
         setupOffline()
-        clearWebCachesThenLoad()
+        loadRoot()
         appUpdatePresenter = AppUpdatePresenter(host: self)
         Task { [weak self] in await self?.appUpdatePresenter?.refresh() }
-    }
-
-    // The iOS URLCache and WKWebsiteDataStore were holding stale index.html
-    // (heuristic freshness without Cache-Control) which pinned the app to an
-    // old asset version even after reinstall. Clear caches (but NOT cookies /
-    // localStorage — user session must survive) then load with a strict
-    // no-cache policy so every launch pulls a fresh shell from the network.
-    private func clearWebCachesThenLoad() {
-        URLCache.shared.removeAllCachedResponses()
-        // NB: do NOT clear WKWebsiteDataTypeServiceWorkerRegistrations here.
-        // Wiping it every launch forced the SW to re-install and re-claim on each
-        // open, which fired the web layer's controllerchange→reload → the app
-        // "flashed twice" on startup. The SW is network-first for HTML and the
-        // shell is served no-cache, so freshness is already guaranteed; keeping the
-        // registration lets it persist (faster launch + real offline support).
-        // NB: do NOT clear WKWebsiteDataTypeFetchCache either. That type IS the
-        // CacheStorage / Cache API store, where the service worker keeps the ~30 MB
-        // of MediaPipe models + wasm. Wiping it every launch made the app
-        // re-download them before Красота/Пластика could run (a 30-90 s wait that
-        // read as "не работает"). The plain HTTP caches below are still cleared, so
-        // html/js/css stay fresh on every launch.
-        let types: Set<String> = [
-            WKWebsiteDataTypeDiskCache,
-            WKWebsiteDataTypeMemoryCache,
-            WKWebsiteDataTypeOfflineWebApplicationCache,
-        ]
-        WKWebsiteDataStore.default().removeData(
-            ofTypes: types,
-            modifiedSince: Date(timeIntervalSince1970: 0)
-        ) { [weak self] in
-            self?.loadRoot()
-        }
     }
 
     // MARK: - WebView
@@ -248,7 +216,9 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
     private func loadRoot() {
         offlineView.isHidden = true
         var req = URLRequest(url: rootUrl)
-        req.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        // The web shell keeps a complete verified release locally and downloads
+        // updates in the background. Preserve WebKit caches and storage on launch.
+        req.cachePolicy = .useProtocolCachePolicy
         webView.load(req)
     }
 
