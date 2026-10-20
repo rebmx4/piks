@@ -34,6 +34,18 @@ final class MuteBoundaryTests: XCTestCase {
         try await verifyPlayer(reported)
     }
 
+    func testExplicitVolumeStepsAreSilentAtShortCut() async throws {
+        try await verifyReader(short, steps: true)
+    }
+
+    func testExplicitVolumeStepsAreSilentAtReportedCut() async throws {
+        try await verifyReader(reported, steps: true)
+    }
+
+    func testPostMixTapCanObserveAnEntirelyMutedTrack() async throws {
+        try await verifyPlayer(short, wholeMute: true)
+    }
+
     func testEncodedExportIsSilentAtShortCut() async throws {
         let cut = short
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -116,13 +128,36 @@ final class MuteBoundaryTests: XCTestCase {
         return url
     }
 
-    private func verifyReader(_ cut: Cut) async throws {
+    private func useSteps(_ cut: Cut, in assembly: PlanAssembly) throws {
+        let track = try XCTUnwrap(assembly.comp.tracks(withMediaType: .audio).first)
+        let parameters = AVMutableAudioMixInputParameters(track: track)
+        parameters.setVolume(1, at: .zero)
+        parameters.setVolume(0, at: CMTime(seconds: cut.at, preferredTimescale: 30000))
+        parameters.setVolume(1, at: CMTime(seconds: cut.end, preferredTimescale: 30000))
+        assembly.mix.inputParameters = [parameters]
+    }
+
+    private func printRamps(_ cut: Cut, in assembly: PlanAssembly, label: String) {
+        guard let parameters = assembly.mix.inputParameters.first else { return }
+        for position in [cut.at - 0.01, cut.at + 0.001, cut.at + 0.05, cut.end + 0.1] {
+            var from: Float = -1, to: Float = -1, range = CMTimeRange.invalid
+            let found = parameters.getVolumeRamp(for: CMTime(seconds: position, preferredTimescale: 30000),
+                                                  startVolume: &from, endVolume: &to, timeRange: &range)
+            print("MUTE-RAMP \(label) at=\(position) found=\(found) from=\(from) to=\(to) " +
+                  "start=\(CMTimeGetSeconds(range.start)) dur=\(CMTimeGetSeconds(range.duration))")
+        }
+    }
+
+    private func verifyReader(_ cut: Cut, steps: Bool = false) async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let audio = try await toneSource(folder), temps = TempFiles()
         defer { temps.removeAll() }
         let assembly = try NativeExporter.assemble(makePlan(cut), ["video": fixture(), "tone": audio], temps: temps)
+        if steps { try useSteps(cut, in: assembly) }
+        let label = "decoded-mix-\(cut.at)" + (steps ? "-steps" : "")
+        printRamps(cut, in: assembly, label: label)
         let reader = try AVAssetReader(asset: assembly.comp)
         let pcm = AVAssetReaderAudioMixOutput(audioTracks: assembly.comp.tracks(withMediaType: .audio),
                                              audioSettings: ExportAudio.floatPCM(channels: 2))
@@ -134,18 +169,27 @@ final class MuteBoundaryTests: XCTestCase {
         XCTAssertTrue(reader.startReading(), String(describing: reader.error))
         while let buffer = pcm.copyNextSampleBuffer() { try samples.consume(buffer) }
         XCTAssertEqual(reader.status, .completed, String(describing: reader.error))
-        samples.printReport("decoded-mix-\(cut.at)")
+        samples.printReport(label)
         check(samples, silence: 0.00001)
     }
 
-    private func verifyPlayer(_ cut: Cut) async throws {
+    private func verifyPlayer(_ cut: Cut, wholeMute: Bool = false) async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let audio = try await toneSource(folder), temps = TempFiles()
         defer { temps.removeAll() }
         let assembly = try NativeExporter.assemble(makePlan(cut), ["video": fixture(), "tone": audio], temps: temps)
-        let samples = AudioBoundarySamples(cut.windows)
+        if wholeMute {
+            let track = try XCTUnwrap(assembly.comp.tracks(withMediaType: .audio).first)
+            let parameters = AVMutableAudioMixInputParameters(track: track)
+            parameters.setVolume(0, at: .zero)
+            assembly.mix.inputParameters = [parameters]
+        }
+        let windows = wholeMute ? cut.windows.map {
+            AudioBoundarySamples.Window(name: "muted-control-" + $0.name, start: $0.start, end: $0.end)
+        } : cut.windows
+        let samples = AudioBoundarySamples(windows)
         // There is one non-overlapping source track, as in the reported cut.
         XCTAssertEqual(assembly.mix.inputParameters.count, 1)
         for parameter in assembly.mix.inputParameters {
@@ -172,7 +216,7 @@ final class MuteBoundaryTests: XCTestCase {
         player.pause()
         withExtendedLifetime(samples) {}
         XCTAssertNil(item.error, String(describing: item.error))
-        samples.printReport("avplayer-post-mix-\(cut.at)")
+        samples.printReport("avplayer-post-mix-\(cut.at)" + (wholeMute ? "-whole-muted-control" : ""))
         XCTAssertTrue(samples.errors.isEmpty, samples.errors.joined(separator: ", "))
         check(samples, silence: 0.00001)
     }
