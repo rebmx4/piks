@@ -127,6 +127,8 @@ targets:
       - path: Tests/NativeExportTests.swift
       - path: Tests/ExportPresentationTests.swift
       - path: Tests/MonoCompositionTests.swift
+      - path: Tests/MuteBoundaryTests.swift
+      - path: Tests/AudioBoundarySamples.swift
       - path: App/NativeExport.swift
       - path: App/ExportPresentation.swift
       - path: App/ExportAudio.swift
