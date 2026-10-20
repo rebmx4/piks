@@ -20,7 +20,17 @@ final class AudioBoundarySamples {
     private let lock = NSLock()
     private var readings: [Reading]
     private var format = AudioStreamBasicDescription()
-    private(set) var errors: [String] = []
+    private var failures: [String] = []
+    var errors: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return failures
+    }
+    private func recordError(_ value: String) {
+        lock.lock()
+        failures.append(value)
+        lock.unlock()
+    }
 
     init(_ windows: [Window]) {
         self.windows = windows
@@ -91,7 +101,7 @@ final class AudioBoundarySamples {
         format = value
         if value.mFormatID != kAudioFormatLinearPCM || value.mBitsPerChannel != 32 ||
             value.mFormatFlags & kAudioFormatFlagIsFloat == 0 {
-            errors.append("Unexpected tap PCM format")
+            recordError("Unexpected tap PCM format")
         }
     }
 
@@ -108,12 +118,15 @@ final class AudioBoundarySamples {
         }
     }
 
-    func makePostMixTap() throws -> MTAudioProcessingTap {
+    func makeSourceTap() throws -> MTAudioProcessingTap {
+        let owner = Unmanaged.passRetained(self)
         var callbacks = MTAudioProcessingTapCallbacks(
             version: kMTAudioProcessingTapCallbacksVersion_0,
-            clientInfo: Unmanaged.passUnretained(self).toOpaque(),
+            clientInfo: owner.toOpaque(),
             init: { _, info, storage in storage.pointee = info },
-            finalize: nil,
+            finalize: { tap in
+                Unmanaged<AudioBoundarySamples>.fromOpaque(MTAudioProcessingTapGetStorage(tap)).release()
+            },
             prepare: { tap, _, format in
                 Unmanaged<AudioBoundarySamples>.fromOpaque(MTAudioProcessingTapGetStorage(tap))
                     .takeUnretainedValue().prepare(format.pointee)
@@ -125,11 +138,13 @@ final class AudioBoundarySamples {
                 let owner = Unmanaged<AudioBoundarySamples>.fromOpaque(MTAudioProcessingTapGetStorage(tap))
                     .takeUnretainedValue()
                 if status == noErr { owner.consume(buffers, frames: outFrames.pointee, range: range) }
-                else { owner.errors.append("Tap source status \(status)") }
+                else { owner.recordError("Tap source status \(status)") }
             })
         var tap: MTAudioProcessingTap?
-        XCTAssertEqual(MTAudioProcessingTapCreate(kCFAllocatorDefault, &callbacks,
-                                                kMTAudioProcessingTapCreationFlag_PostEffects, &tap), noErr)
+        let status = MTAudioProcessingTapCreate(kCFAllocatorDefault, &callbacks,
+                                               kMTAudioProcessingTapCreationFlag_PostEffects, &tap)
+        if status != noErr { owner.release() }
+        XCTAssertEqual(status, noErr)
         return try XCTUnwrap(tap)
     }
 }

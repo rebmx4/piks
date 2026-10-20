@@ -1,0 +1,126 @@
+{
+  "generator": "tests/native-mute-fixture.mjs",
+  "nativePlanSha256": "dd844946d9feaaa890725dc7d3ea543a9967b219b928cafa65567c13096f19be",
+  "cases": {
+    "short": {
+      "cut": 0.508,
+      "duration": 0.257,
+      "sounds": [
+        {
+          "media": "tone",
+          "at": 0,
+          "from": 0,
+          "dur": 0.508,
+          "volume": 1,
+          "keys": [
+            {
+              "at": 0,
+              "g": 1
+            },
+            {
+              "at": 0.508,
+              "g": 1
+            }
+          ]
+        },
+        {
+          "media": "tone",
+          "at": 0.765,
+          "from": 6.5,
+          "dur": 0.29999999999999993,
+          "volume": 1,
+          "keys": [
+            {
+              "at": 0.765,
+              "g": 1
+            },
+            {
+              "at": 1.065,
+              "g": 1
+            }
+          ]
+        }
+      ],
+      "silenced": [
+        {
+          "order": 2,
+          "media": "tone",
+          "at": 0.508,
+          "from": 3.5,
+          "dur": 0.257,
+          "volume": 0,
+          "keys": [
+            {
+              "at": 0.508,
+              "g": 0
+            },
+            {
+              "at": 0.765,
+              "g": 0
+            }
+          ]
+        }
+      ]
+    },
+    "reported": {
+      "cut": 33.009,
+      "duration": 2.44,
+      "sounds": [
+        {
+          "media": "tone",
+          "at": 30.011,
+          "from": 0,
+          "dur": 2.998000000000001,
+          "volume": 1,
+          "keys": [
+            {
+              "at": 30.011,
+              "g": 1
+            },
+            {
+              "at": 33.009,
+              "g": 1
+            }
+          ]
+        },
+        {
+          "media": "tone",
+          "at": 35.449,
+          "from": 6.5,
+          "dur": 0.3,
+          "volume": 1,
+          "keys": [
+            {
+              "at": 35.449,
+              "g": 1
+            },
+            {
+              "at": 35.748999999999995,
+              "g": 1
+            }
+          ]
+        }
+      ],
+      "silenced": [
+        {
+          "order": 2,
+          "media": "tone",
+          "at": 33.009,
+          "from": 3.5,
+          "dur": 2.44,
+          "volume": 0,
+          "keys": [
+            {
+              "at": 33.009,
+              "g": 0
+            },
+            {
+              "at": 35.449,
+              "g": 0
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
