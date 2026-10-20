@@ -160,9 +160,12 @@ final class MuteBoundaryTests: XCTestCase {
         let audio = try await toneSource(folder), temps = TempFiles()
         defer { temps.removeAll() }
         let assembly = try NativeExporter.assemble(makePlan(cut), ["video": fixture(), "tone": audio], temps: temps)
-        let samples = AudioBoundarySamples(cut.windows)
         // This host's tap exposes source PCM even for an all-zero mix level.
         // It can verify a physical source gap, not calibrate applied mix gain.
+        // With .spectral, its timestamps also expose the next source 4096/48000s
+        // early. Measure the reported first 100ms here; the reader and encoded
+        // export independently check the whole muted interval without this tap.
+        let samples = AudioBoundarySamples(cut.windows.filter { $0.name != "muted-later" })
         for track in assembly.comp.tracks(withMediaType: .audio) {
             for segment in track.segments where !segment.isEmpty {
                 let range = segment.timeMapping.target
