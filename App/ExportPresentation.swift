@@ -8,6 +8,10 @@ struct ExportPresentation {
     let rate: Double
     let foregroundScale: CGFloat
     let backgroundGain: CGFloat
+    let isVariant: Bool
+    let brightness: CGFloat
+    let contrast: CGFloat
+    let saturation: CGFloat
 
     init?(json: [String: Any]) {
         guard let rate = (json["rate"] as? NSNumber)?.doubleValue,
@@ -19,6 +23,23 @@ struct ExportPresentation {
         self.rate = rate
         foregroundScale = CGFloat(scale)
         backgroundGain = CGFloat(gain)
+        if let version = json["variantVersion"] {
+            guard (version as? Int) == 1,
+                  (0.97...0.99).contains(rate), (0.95...0.98).contains(scale), gain == 0,
+                  let brightness = (json["brightness"] as? NSNumber)?.doubleValue,
+                  let contrast = (json["contrast"] as? NSNumber)?.doubleValue,
+                  let saturation = (json["saturation"] as? NSNumber)?.doubleValue,
+                  brightness.isFinite, (-0.015...0.015).contains(brightness),
+                  contrast.isFinite, (0.96...1.04).contains(contrast),
+                  saturation.isFinite, (0.97...1.03).contains(saturation) else { return nil }
+            isVariant = true
+            self.brightness = CGFloat(brightness)
+            self.contrast = CGFloat(contrast)
+            self.saturation = CGFloat(saturation)
+        } else {
+            isVariant = false
+            brightness = 0; contrast = 1; saturation = 1
+        }
     }
 
     func outputTime(_ source: CMTime) -> CMTime {
@@ -41,6 +62,9 @@ struct ExportPresentation {
         let transform = CGAffineTransform(scaleX: scale, y: scale)
             .concatenating(CGAffineTransform(translationX: bounds.midX * (1 - scale),
                                             y: bounds.midY * (1 - scale)))
-        return image.transformed(by: transform).composited(over: background).cropped(to: bounds)
+        let foreground = isVariant ? image.applyingFilter("CIColorControls", parameters: [
+            kCIInputBrightnessKey: brightness, kCIInputContrastKey: contrast, kCIInputSaturationKey: saturation,
+        ]) : image
+        return foreground.transformed(by: transform).composited(over: background).cropped(to: bounds)
     }
 }

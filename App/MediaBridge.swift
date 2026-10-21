@@ -71,7 +71,7 @@ final class MediaBridge: NSObject {
         var caps = ["pick", "export", "photos", "share", "wave", "audio", "ramps", "read", "adjust", "gallery",
                     "speed", "crop", "mask", "overlap", "cifilter", "stills", "files", "photo", "live", "haptic",
                     "mic", "vision", "preview", "stereo", "inbox", "keep", "cache", "play", "reverse", "reverse-proxy", "mediaRead",
-                    "exportPresentation"]
+                    "exportPresentation", "exportVariants"]
         if canChooseSite { caps.insert("site", at: 4) }
         if #available(iOS 17.0, *) { caps.append("subject") }
         let list = caps.map { "'" + $0 + "'" }.joined(separator: ", ")

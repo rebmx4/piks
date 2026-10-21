@@ -709,16 +709,19 @@ final class TempFiles {
 }
 
 final class NativeExporter {
+    typealias PhotoSaver = (URL, @escaping (Bool, String?) -> Void) -> Void
     let job: String
     private let plan: ExportPlan
     private let send: ([String: Any]) -> Void
     private let resolve: (String, @escaping (URL?) -> Void) -> Void
+    private let photoSaver: PhotoSaver
     private let work = DispatchQueue(label: "ryndi.export.work")
     private let videoQueue = DispatchQueue(label: "ryndi.export.video")
     private let audioQueue = DispatchQueue(label: "ryndi.export.audio")
     private let started = Date()
     private var lastProgress = Date.distantPast
     private var cancelled = false
+    private var savingToPhotos = false // Accessed only on work; a pending Photos write must finish.
     private var ended = false
     private var reader: AVAssetReader?
     private var writer: AVAssetWriter?
@@ -736,11 +739,13 @@ final class NativeExporter {
 
     init(job: String, plan: ExportPlan,
          send: @escaping ([String: Any]) -> Void,
-         resolve: @escaping (String, @escaping (URL?) -> Void) -> Void) {
+         resolve: @escaping (String, @escaping (URL?) -> Void) -> Void,
+         photoSaver: @escaping PhotoSaver = NativeExporter.saveToPhotos) {
         self.job = job
         self.plan = plan
         self.send = send
         self.resolve = resolve
+        self.photoSaver = photoSaver
     }
 
     func start() {
@@ -758,9 +763,12 @@ final class NativeExporter {
     }
 
     func cancel() {
-        cancelled = true
-        reader?.cancelReading()
-        if reader == nil { work.async { self.finishCancelled() } }
+        work.async {
+            self.cancelled = true
+            guard !self.savingToPhotos else { return }
+            self.reader?.cancelReading()
+            if self.reader == nil { self.finishCancelled() }
+        }
     }
 
     // Адрес ryndi-media://orig/<id>.mp4 -> файл ролика в галерее.
@@ -1085,7 +1093,7 @@ final class NativeExporter {
         // Codec, color and timing information remains part of the media format.
         writer.metadata = []
         writer.shouldOptimizeForNetworkUse = true
-        var codec: AVVideoCodecType = plan.codec == "h264" ? .h264 : .hevc
+        var codec: AVVideoCodecType = plan.presentation?.isVariant == true || plan.codec == "h264" ? .h264 : .hevc
         var vs = videoSettings(codec)
         if !writer.canApply(outputSettings: vs, forMediaType: .video) {
             codec = .h264
@@ -1118,7 +1126,7 @@ final class NativeExporter {
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
                 AVSampleRateKey: 48000,
                 AVNumberOfChannelsKey: 2,
-                AVEncoderBitRateKey: 192000,
+                AVEncoderBitRateKey: plan.presentation?.isVariant == true ? 160000 : 192000,
             ]
             let pcm: [String: Any] = [
                 AVFormatIDKey: kAudioFormatLinearPCM,
@@ -1184,6 +1192,7 @@ final class NativeExporter {
         timer.schedule(deadline: .now() + .milliseconds(200), repeating: .milliseconds(200))
         timer.setEventHandler { [weak self] in
             guard let self = self else { return }
+            guard !self.savingToPhotos else { return }
             if self.cancelled {
                 writer.cancelWriting()
                 self.finishCancelled()
@@ -1254,28 +1263,42 @@ final class NativeExporter {
             return
         }
         writer.finishWriting {
-            guard writer.status == .completed else {
-                self.phase = "writer-finish"
-                self.fail(writer.error ?? ExportError("файл не записался"))
-                return
-            }
-            let attrs = try? FileManager.default.attributesOfItem(atPath: out.path)
-            let bytes = (attrs?[.size] as? NSNumber)?.intValue ?? 0
-            var info: [String: Any] = [
-                "event": "export-done", "job": self.job, "bytes": bytes,
-                "took": Date().timeIntervalSince(self.started),
-                "width": self.plan.width, "height": self.plan.height, "fps": self.plan.fps,
-                "codec": codec == .hevc ? "hevc" : "avc", "audio": audio,
-            ]
-            guard self.plan.save else {
-                info["saved"] = false
-                self.end(info, file: out)
-                return
-            }
-            NativeExporter.saveToPhotos(out) { ok, why in
-                info["saved"] = ok
-                if let why = why { info["saveError"] = why }
-                self.end(info, file: out)
+            self.work.async {
+                if self.cancelled {
+                    try? FileManager.default.removeItem(at: out)
+                    self.finishCancelled()
+                    return
+                }
+                guard writer.status == .completed else {
+                    self.phase = "writer-finish"
+                    self.fail(writer.error ?? ExportError("файл не записался"))
+                    return
+                }
+                let attrs = try? FileManager.default.attributesOfItem(atPath: out.path)
+                let bytes = (attrs?[.size] as? NSNumber)?.intValue ?? 0
+                var info: [String: Any] = [
+                    "event": "export-done", "job": self.job, "bytes": bytes,
+                    "took": Date().timeIntervalSince(self.started),
+                    "width": self.plan.width, "height": self.plan.height, "fps": self.plan.fps,
+                    "codec": codec == .hevc ? "hevc" : "avc", "audio": audio,
+                ]
+                guard self.plan.save else {
+                    info["saved"] = false
+                    self.end(info, file: out)
+                    return
+                }
+                // The completed file belongs to this result until Photos replies, even after cancel.
+                self.savingToPhotos = true
+                self.monitor?.cancel()
+                self.monitor = nil
+                self.photoSaver(out) { ok, why in
+                    self.work.async {
+                        self.savingToPhotos = false
+                        info["saved"] = ok
+                        if let why = why { info["saveError"] = why }
+                        self.end(info, file: out)
+                    }
+                }
             }
         }
     }
