@@ -190,7 +190,7 @@ final class ExportPresentationTests: XCTestCase {
         let asset = AVURLAsset(url: url)
         XCTAssertEqual(CMTimeGetSeconds(asset.duration), 11.213, accuracy: 0.05)
         let video = try XCTUnwrap(asset.tracks(withMediaType: .video).first)
-        let description = try XCTUnwrap(video.formatDescriptions.first as? CMFormatDescription)
+        let description = try XCTUnwrap(video.formatDescriptions.first) as! CMFormatDescription
         XCTAssertEqual(CMFormatDescriptionGetMediaSubType(description), kCMVideoCodecType_H264)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.requestedTimeToleranceBefore = .zero
@@ -201,7 +201,7 @@ final class ExportPresentationTests: XCTestCase {
         XCTAssertGreaterThan(color(blue, x: 90, y: 160)[2], 220)
         XCTAssertLessThan(color(red, x: 0, y: 160)[0], 6)
         let audio = try XCTUnwrap(asset.tracks(withMediaType: .audio).first)
-        let audioDescription = try XCTUnwrap(audio.formatDescriptions.first as? CMAudioFormatDescription)
+        let audioDescription = try XCTUnwrap(audio.formatDescriptions.first) as! CMAudioFormatDescription
         let format = try XCTUnwrap(CMAudioFormatDescriptionGetStreamBasicDescription(audioDescription)).pointee
         XCTAssertEqual(format.mSampleRate, 48000)
         XCTAssertEqual(format.mFormatID, kAudioFormatMPEG4AAC)
