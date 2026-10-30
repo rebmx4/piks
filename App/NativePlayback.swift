@@ -48,6 +48,8 @@ final class NativePlayback: NSObject {
     private var lastPosition = 0.0
     private var statusWatch: NSKeyValueObservation?
     private var playWatch: NSKeyValueObservation?
+    private var displayWatch: NSKeyValueObservation?
+    private var displayDeadline: DispatchWorkItem?
     private var failToken: NSObjectProtocol?
     private var endToken: NSObjectProtocol?
     private var temps = TempFiles()
@@ -105,6 +107,7 @@ final class NativePlayback: NSObject {
         }
         // Новый запрос сразу отменяет старую сборку и запуск, даже при ошибке JSON.
         if player.rate != 0 || wantPlay { pause() }
+        stopLink()
         gen += 1
         startSeq += 1
         seekSeq += 1
@@ -182,6 +185,7 @@ final class NativePlayback: NSObject {
     }
 
     private func install(_ a: PlanAssembly, key newKey: String, temps fresh: TempFiles) {
+        stopLink()
         startSeq += 1
         seekSeq += 1
         seekTarget = nil
@@ -331,6 +335,15 @@ final class NativePlayback: NSObject {
         return t.isFinite ? t : 0
     }
 
+    private func showIfReady(_ item: AVPlayerItem, key itemKey: String, run context: Run?, sequence: Int) {
+        guard wantPlay, playWatch != nil, displayWatch != nil,
+              current(item, key: itemKey, run: context, sequence: sequence),
+              player.timeControlStatus == .playing, playerLayer.isReadyForDisplay else { return }
+        view.isHidden = false
+        startLink() // Снимает оба KVO и таймаут: play-started отправляется один раз.
+        send?(event("play-started", fields: ["t": seconds()]))
+    }
+
     // MARK: - Игра
 
     func start(_ t: Double, key requestedKey: String? = nil, requestId: String? = nil) {
@@ -361,19 +374,30 @@ final class NativePlayback: NSObject {
         let mySeek = seekSeq
         seekTarget = max(0, t)
         lastPosition = max(0, t)
+        // Ограничиваем и ожидание seek: без завершения callback веб тоже должен получить отказ.
+        let deadline = DispatchWorkItem { [weak self] in
+            guard let self = self, self.wantPlay, self.displayDeadline != nil,
+                  self.current(item, key: itemKey, run: context, sequence: mySeq) else { return }
+            self.showIfReady(item, key: itemKey, run: context, sequence: mySeq)
+            guard self.wantPlay, self.displayDeadline != nil,
+                  self.current(item, key: itemKey, run: context, sequence: mySeq) else { return }
+            self.failed("первый кадр превью не появился", kind: "display", phase: "display", at: self.seconds())
+        }
+        displayDeadline = deadline
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: deadline)
         player.seek(to: NativePlayback.time(t), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
             DispatchQueue.main.async {
                 guard let self = self, self.wantPlay, finished,
                       self.current(item, key: itemKey, run: context, sequence: mySeq) else { return }
                 if mySeek == self.seekSeq { self.seekTarget = nil }
-                self.playWatch = self.player.observe(\.timeControlStatus, options: [.new]) { [weak self] p, _ in
-                    guard p.timeControlStatus == .playing else { return }
-                    DispatchQueue.main.async {
-                        guard let self = self, self.wantPlay, self.playWatch != nil,
-                              self.current(item, key: itemKey, run: context, sequence: mySeq) else { return }
-                        self.view.isHidden = false
-                        self.startLink()
-                        self.send?(self.event("play-started", fields: ["t": self.seconds()]))
+                self.playWatch = self.player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] _, _ in
+                    DispatchQueue.main.async { [weak self] in
+                        self?.showIfReady(item, key: itemKey, run: context, sequence: mySeq)
+                    }
+                }
+                self.displayWatch = self.playerLayer.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak self] _, _ in
+                    DispatchQueue.main.async { [weak self] in
+                        self?.showIfReady(item, key: itemKey, run: context, sequence: mySeq)
                     }
                 }
                 self.player.play()
@@ -464,6 +488,10 @@ final class NativePlayback: NSObject {
     private func stopLink() {
         playWatch?.invalidate()
         playWatch = nil
+        displayWatch?.invalidate()
+        displayWatch = nil
+        displayDeadline?.cancel()
+        displayDeadline = nil
         link?.invalidate()
         link = nil
     }
