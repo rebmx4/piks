@@ -304,6 +304,8 @@ final class NativePlayback: NSObject {
         var failure = errorEvent(reason, kind: kind, phase: phase, key: key ?? loadingKey,
                                  error: error, item: player.currentItem)
         failure["t"] = position ?? seekTarget ?? seconds()
+        // Готовность сброшена даже на паузе/до Play и при отмене без decoder failure.
+        failure["invalidated"] = true
         if let run = run {
             failure["key"] = run.key
             failure["requestId"] = run.requestId
@@ -351,7 +353,8 @@ final class NativePlayback: NSObject {
         let context = run
         watch(item, key: itemKey)
         if item.status == .failed {
-            failed(item.error?.localizedDescription ?? "видео не открылось", phase: "start", error: item.error)
+            failed(item.error?.localizedDescription ?? "видео не открылось", phase: "start",
+                   error: item.error, at: max(0, t))
             return
         }
         seekSeq += 1
