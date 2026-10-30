@@ -84,6 +84,32 @@ jobs:
             -resultBundlePath build/ci/reverse.xcresult \
             CODE_SIGNING_ALLOWED=NO > build/ci/reverse-tests.log 2>&1 || {
               tail -n 120 build/ci/reverse-tests.log
+              xcrun xcresulttool get test-results summary \
+                --path build/ci/reverse.xcresult > build/ci/reverse-summary.json 2>/dev/null || true
+              python3 - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          messages = []
+          try:
+              summary = json.loads(Path('build/ci/reverse-summary.json').read_text())
+              messages = [
+                  f"{failure.get('testName', 'test')}: {failure.get('failureText', 'failed')}"
+                  for failure in summary.get('testFailures', [])[:3]
+              ]
+          except (OSError, ValueError):
+              pass
+          if not messages:
+              lines = Path('build/ci/reverse-tests.log').read_text(errors='replace').splitlines()
+              messages = [
+                  line for line in lines
+                  if re.search(r'error:|Test Case .* failed|Testing failed:', line, re.I)
+              ][-3:]
+          for message in messages or ['xcodebuild test failed; see failure artifact']:
+              message = ' '.join(message.split())[:500].replace('%', '%25')
+              print(f'::error title=Run reversal tests::{message}')
+          PY
               exit 1
             }
           tail -n 12 build/ci/reverse-tests.log
