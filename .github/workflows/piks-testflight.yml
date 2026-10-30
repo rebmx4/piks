@@ -1,0 +1,280 @@
+name: APIKS signed iPhone IPA
+run-name: APIKS signed build - ${{ inputs.revision }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Exact 40-character source SHA from a successful APIKS native check
+        required: true
+        type: string
+      verified_run_id:
+        description: Successful APIKS native check GitHub Actions run ID for that SHA
+        required: true
+        type: string
+      upload_to_testflight:
+        description: Upload validated IPA to the existing App Store Connect app
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: piks-signing
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  ios:
+    name: Verify source, sign both targets, optionally upload
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      CM_BUILD_DIR: ${{ github.workspace }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      SOURCE_REVISION: ${{ inputs.revision }}
+      VERIFIED_RUN_ID: ${{ inputs.verified_run_id }}
+      APP_STORE_APP_ID: "6794464999"
+      APP_BUNDLE_ID: com.piks.app
+      SHARE_BUNDLE_ID: com.piks.app.share
+      APP_GROUP_ID: group.com.piks.app
+      APPLE_TEAM_ID: GR3WB4Z646
+    steps:
+      - name: Use Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+
+      - name: Require a successful native check for the exact SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_REVISION" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$VERIFIED_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          mkdir -p build/ci
+          curl --fail --silent --show-error --retry 3 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$VERIFIED_RUN_ID" \
+            -o build/ci/native-run.json
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          run = json.loads(Path('build/ci/native-run.json').read_text())
+          required = {
+              'id': int(os.environ['VERIFIED_RUN_ID']),
+              'head_sha': os.environ['SOURCE_REVISION'],
+              'head_branch': 'fix/play-context-20261030',
+              'status': 'completed',
+              'conclusion': 'success',
+          }
+          for field, expected in required.items():
+              if run.get(field) != expected:
+                  raise SystemExit(f'Native check {field} does not match the requested source')
+          if run.get('repository', {}).get('full_name') != os.environ['GITHUB_REPOSITORY']:
+              raise SystemExit('Native check belongs to another repository')
+          if str(run.get('path', '')).partition('@')[0] != '.github/workflows/piks-native-check.yml':
+              raise SystemExit('Expected the APIKS native check workflow')
+          if run.get('event') not in ('push', 'workflow_dispatch'):
+              raise SystemExit('Expected a branch push or manual native check')
+          print('Successful APIKS native check matches the requested SHA')
+          PY
+
+      - name: Check out verified source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.revision }}
+          persist-credentials: false
+
+      - name: Verify checkout and generate Xcode project
+        run: |
+          set -euo pipefail
+          test "$SOURCE_REVISION" = "$(git rev-parse HEAD)"
+          mkdir -p build/ci
+          test -x "$DEVELOPER_DIR/usr/bin/xcodebuild"
+          xcodebuild -version
+          if ! command -v xcodegen >/dev/null; then brew install xcodegen; fi
+          xcodegen generate --spec project.yml
+          test -f Piks.xcodeproj/project.pbxproj
+
+      - name: Require Apple signing secrets
+        env:
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_KEY_IDENTIFIER: ${{ secrets.APP_STORE_CONNECT_KEY_IDENTIFIER }}
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+          CERT_KEY_B64: ${{ secrets.CERT_KEY_B64 }}
+        run: |
+          python3 - <<'PY'
+          import os
+
+          names = ('APP_STORE_CONNECT_ISSUER_ID', 'APP_STORE_CONNECT_KEY_IDENTIFIER',
+                   'APP_STORE_CONNECT_PRIVATE_KEY', 'CERT_KEY_B64')
+          missing = [name for name in names if not os.environ.get(name)]
+          if missing:
+              raise SystemExit('Missing GitHub secrets: ' + ', '.join(missing))
+          PY
+
+      - name: Install pinned open-source signing CLI
+        run: |
+          set -euo pipefail
+          mkdir -p .cache/pip .cache/tmp build/signing
+          export PIP_CACHE_DIR="$PWD/.cache/pip"
+          export TMPDIR="$PWD/.cache/tmp"
+          python3 -m venv .cache/release-tools
+          .cache/release-tools/bin/python -m pip install --disable-pip-version-check codemagic-cli-tools==0.70.0
+          printf '%s\n' "$PWD/.cache/release-tools/bin" >> "$GITHUB_PATH"
+
+      - name: Fetch App Store profiles for app and share extension
+        env:
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_KEY_IDENTIFIER: ${{ secrets.APP_STORE_CONNECT_KEY_IDENTIFIER }}
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+          CERT_KEY_B64: ${{ secrets.CERT_KEY_B64 }}
+        run: |
+          set -euo pipefail
+          trap 'rm -f build/signing/distribution-key.pem' EXIT
+          python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+
+          path = Path('build/signing/distribution-key.pem')
+          path.write_bytes(base64.b64decode(os.environ['CERT_KEY_B64'], validate=True))
+          path.chmod(0o600)
+          PY
+          keychain initialize
+          app-store-connect fetch-signing-files "$APP_BUNDLE_ID" \
+            --type IOS_APP_STORE --strict-match-identifier \
+            --certificate-key="@file:$PWD/build/signing/distribution-key.pem" --create
+          app-store-connect fetch-signing-files "$SHARE_BUNDLE_ID" \
+            --type IOS_APP_STORE --strict-match-identifier \
+            --certificate-key="@file:$PWD/build/signing/distribution-key.pem" --create
+          keychain add-certificates
+          xcode-project use-profiles --project Piks.xcodeproj \
+            --export-options-plist "$PWD/build/signing/export.plist"
+
+      - name: Choose a new build number for existing App Store Connect app
+        env:
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_KEY_IDENTIFIER: ${{ secrets.APP_STORE_CONNECT_KEY_IDENTIFIER }}
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          latest="$(app-store-connect get-latest-build-number "$APP_STORE_APP_ID" --all-versions)"
+          LATEST_BUILD="$latest" python3 - <<'PY'
+          import os
+          import time
+          from pathlib import Path
+
+          previous = os.environ['LATEST_BUILD'].strip()
+          if previous and not previous.isdecimal():
+              raise SystemExit('Existing App Store Connect build number is not numeric')
+          number = max(int(previous or '0') + 1, int(time.time()))
+          Path('build/ci/build-number.txt').write_text(f'{number}\n')
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as target:
+              target.write(f'BUILD_NUMBER={number}\n')
+          print(f'Next build number: {number}')
+          PY
+
+      - name: Archive and export signed IPA
+        run: |
+          set -euo pipefail
+          xcodebuild archive -project Piks.xcodeproj -scheme App \
+            -configuration Release -destination 'generic/platform=iOS' \
+            -archivePath "$PWD/build/ci/Piks.xcarchive" \
+            -derivedDataPath "$PWD/build/ci/derived" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" > build/ci/archive.log 2>&1 || {
+              tail -n 120 build/ci/archive.log
+              exit 1
+            }
+          xcodebuild -exportArchive -archivePath "$PWD/build/ci/Piks.xcarchive" \
+            -exportPath "$PWD/build/ci/export" \
+            -exportOptionsPlist "$PWD/build/signing/export.plist" \
+            > build/ci/export.log 2>&1 || {
+              tail -n 120 build/ci/export.log
+              exit 1
+            }
+
+      - name: Validate bundle IDs, team, App Group and signatures
+        run: |
+          set -euo pipefail
+          ipa="$(python3 - <<'PY'
+          from pathlib import Path
+
+          files = list(Path('build/ci/export').glob('*.ipa'))
+          if len(files) != 1:
+              raise SystemExit(f'Expected one exported IPA; found {len(files)}')
+          print(files[0])
+          PY
+          )"
+          ditto -x -k "$ipa" build/ci/unpacked
+          app=build/ci/unpacked/Payload/Piks.app
+          extension="$app/PlugIns/ShareExtension.appex"
+          codesign --verify --deep --strict "$app"
+          codesign --verify --strict "$extension"
+          codesign -d --entitlements :- "$app" > build/ci/app-entitlements.plist 2>/dev/null
+          codesign -d --entitlements :- "$extension" > build/ci/share-entitlements.plist 2>/dev/null
+          python3 - <<'PY'
+          import os
+          import plistlib
+          from pathlib import Path
+
+          root = Path('build/ci/unpacked/Payload/Piks.app')
+          expected = (
+              (root, Path('build/ci/app-entitlements.plist'), os.environ['APP_BUNDLE_ID']),
+              (root / 'PlugIns/ShareExtension.appex',
+               Path('build/ci/share-entitlements.plist'), os.environ['SHARE_BUNDLE_ID']),
+          )
+          for bundle, entitlements_path, bundle_id in expected:
+              info = plistlib.loads((bundle / 'Info.plist').read_bytes())
+              entitlements = plistlib.loads(entitlements_path.read_bytes())
+              if info.get('CFBundleIdentifier') != bundle_id:
+                  raise SystemExit(f'Wrong bundle ID in {bundle.name}')
+              if info.get('CFBundleVersion') != os.environ['BUILD_NUMBER']:
+                  raise SystemExit(f'Wrong build number in {bundle.name}')
+              if entitlements.get('application-identifier') != f"{os.environ['APPLE_TEAM_ID']}.{bundle_id}":
+                  raise SystemExit(f'Wrong application identifier in {bundle.name}')
+              if entitlements.get('com.apple.developer.team-identifier') != os.environ['APPLE_TEAM_ID']:
+                  raise SystemExit(f'Wrong Apple team in {bundle.name}')
+              if os.environ['APP_GROUP_ID'] not in entitlements.get('com.apple.security.application-groups', []):
+                  raise SystemExit(f'Missing App Group in {bundle.name}')
+              if entitlements.get('get-task-allow') is not False:
+                  raise SystemExit(f'Expected distribution signing in {bundle.name}')
+          print('Both IPA targets have the expected identities, App Group and distribution signatures')
+          PY
+          mkdir -p build/ci/validated
+          cp "$ipa" build/ci/validated/Piks.ipa
+
+      - name: Upload validated IPA to App Store Connect
+        if: ${{ inputs.upload_to_testflight }}
+        env:
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_KEY_IDENTIFIER: ${{ secrets.APP_STORE_CONNECT_KEY_IDENTIFIER }}
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          app-store-connect publish --path build/ci/validated/Piks.ipa \
+            --enable-package-validation
+
+      - name: Save signed IPA and build diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: piks-signed-${{ github.run_id }}
+          path: |
+            build/ci/validated/Piks.ipa
+            build/ci/*.log
+            build/ci/build-number.txt
+          retention-days: 1
+          if-no-files-found: warn
