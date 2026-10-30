@@ -71,7 +71,7 @@ final class MediaBridge: NSObject {
         var caps = ["pick", "export", "photos", "share", "wave", "audio", "ramps", "read", "adjust", "gallery",
                     "speed", "crop", "mask", "overlap", "cifilter", "stills", "files", "photo", "live", "haptic",
                     "mic", "vision", "preview", "stereo", "inbox", "keep", "cache", "play", "reverse", "reverse-proxy", "mediaRead",
-                    "exportPresentation"]
+                    "exportPresentation", "play-context"]
         if canChooseSite { caps.insert("site", at: 4) }
         if #available(iOS 17.0, *) { caps.append("subject") }
         let list = caps.map { "'" + $0 + "'" }.joined(separator: ", ")
@@ -149,11 +149,13 @@ final class MediaBridge: NSObject {
         case "keep-drop":      keepDrop((body["ids"] as? [String]) ?? [])
         case "cache":          cacheCommand(body)
         case "play-load":      playback?.load(body["plan"] as? String, key: body["key"] as? String)
-        case "play-start":     playback?.start(MediaBridge.number(body["t"]))
-        case "play-pause":     playback?.pause()
-        case "play-seek":      playback?.seek(MediaBridge.number(body["t"]))
+        case "play-start":     playback?.start(MediaBridge.number(body["t"]), key: body["key"] as? String,
+                                              requestId: body["requestId"] as? String)
+        case "play-pause":     playback?.pause(key: body["key"] as? String, requestId: body["requestId"] as? String)
+        case "play-seek":      playback?.seek(MediaBridge.number(body["t"]), key: body["key"] as? String,
+                                             requestId: body["requestId"] as? String)
         case "play-hide":      playback?.hide()
-        case "play-stop":      playback?.stop()
+        case "play-stop":      playback?.stop(key: body["key"] as? String, requestId: body["requestId"] as? String)
         case "play-rect":
             playback?.rect(CGRect(x: MediaBridge.number(body["x"]), y: MediaBridge.number(body["y"]),
                                   width: MediaBridge.number(body["w"]), height: MediaBridge.number(body["h"])))

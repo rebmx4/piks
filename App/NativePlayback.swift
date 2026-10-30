@@ -20,17 +20,24 @@ import AVFoundation
 // слой прячется по её просьбе (play-hide), когда её кадр уже на экране.
 //
 // Команды (MediaBridge): play-load { plan, key } — собрать заранее (ответ
-// play-ready / play-error), play-start { t } (ответ play-started, дальше
+// play-ready / play-error), play-start { t, key, requestId } (ответ play-started, дальше
 // play-time { t } ~30 раз в секунду, в конце play-ended), play-pause (ответ
 // play-paused { t }), play-seek { t }, play-hide, play-rect { x, y, w, h } —
 // где превью на странице (точки), play-stop — выгрузить.
+// При play-context start/pause/seek/stop адресуются key + requestId;
+// события запуска несут тот же контекст. Без обоих полей — прежний протокол.
 final class NativePlayback: NSObject {
 
     let view = UIView()                          // под webView: слой видео в прямоугольнике превью
-    private let player = AVPlayer()
+    private var player = AVPlayer()
     private let playerLayer: AVPlayerLayer
     private var key: String?                     // план, который собран и стоит в проигрывателе
     private var loadingKey: String?
+    private struct Run: Equatable {
+        let key: String
+        let requestId: String
+    }
+    private var run: Run?                        // nil — старый web без play-context
     private var gen = 0                           // номер загрузки: устаревшую сборку выбросить
     private var link: CADisplayLink?
     private var lastSent = 0.0
@@ -40,6 +47,7 @@ final class NativePlayback: NSObject {
     private var seekTarget: Double?
     private var lastPosition = 0.0
     private var statusWatch: NSKeyValueObservation?
+    private var playWatch: NSKeyValueObservation?
     private var failToken: NSObjectProtocol?
     private var endToken: NSObjectProtocol?
     private var temps = TempFiles()
@@ -65,15 +73,18 @@ final class NativePlayback: NSObject {
 
     @objc private func servicesReset() {
         DispatchQueue.main.async {
-            guard self.key != nil || self.loadingKey != nil else { return }
             // После сброса/удаления item AVPlayer уже может отдавать 0.
             // Последняя позиция сохраняется по его тикам и запросам перемотки.
-            let position = self.seekTarget ?? self.lastPosition
-            self.gen += 1
-            self.loadingKey = nil
-            self.forget()
+            if self.key != nil || self.loadingKey != nil {
+                self.failed("медиаслужба телефона перезапустилась", kind: "services-reset",
+                            phase: "reset", at: self.seekTarget ?? self.lastPosition)
+            }
+            // Даже без текущего плана старый AVPlayer пережил глобальный reset.
             self.player.replaceCurrentItem(with: nil)
-            self.failed("медиаслужба телефона перезапустилась", at: position)
+            self.player = AVPlayer()
+            self.player.actionAtItemEnd = .pause
+            self.player.automaticallyWaitsToMinimizeStalling = false
+            self.playerLayer.player = self.player
         }
     }
 
@@ -92,13 +103,22 @@ final class NativePlayback: NSObject {
             send?(["event": "play-ready", "key": newKey])
             return
         }
+        // Новый запрос сразу отменяет старую сборку и запуск, даже при ошибке JSON.
+        if player.rate != 0 || wantPlay { pause() }
+        gen += 1
+        startSeq += 1
+        seekSeq += 1
+        seekTarget = nil
+        run = nil
+        key = nil
+        loadingKey = nil
+        forget()
         guard let text = text, let data = text.data(using: .utf8),
               let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let plan = ExportPlan(json: json) else {
-            send?(["event": "play-error", "key": newKey, "reason": "план превью не прочитался"])
+            send?(errorEvent("план превью не прочитался", kind: "prepare", phase: "prepare", key: newKey))
             return
         }
-        gen += 1
         let myGen = gen
         loadingKey = newKey
         let started = Date()
@@ -120,7 +140,8 @@ final class NativePlayback: NSObject {
                     DispatchQueue.main.async {
                         guard myGen == self.gen else { return }
                         self.loadingKey = nil
-                        self.send?(["event": "play-error", "key": newKey, "reason": error.localizedDescription])
+                        self.send?(self.errorEvent(error.localizedDescription, kind: "prepare", phase: "prepare",
+                                                  key: newKey, error: error))
                     }
                 }
             }
@@ -161,15 +182,9 @@ final class NativePlayback: NSObject {
     }
 
     private func install(_ a: PlanAssembly, key newKey: String, temps fresh: TempFiles) {
+        startSeq += 1
         seekSeq += 1
         seekTarget = nil
-        // Шла игра — сначала пауза: странице — где встали (она тоже встанет).
-        if player.rate != 0 || wantPlay {
-            wantPlay = false
-            player.pause()
-            stopLink()
-            send?(["event": "play-paused", "t": seconds()])
-        }
         let item = AVPlayerItem(asset: a.comp)
         item.videoComposition = a.video
         item.audioMix = a.mix
@@ -177,32 +192,48 @@ final class NativePlayback: NSObject {
         item.audioTimePitchAlgorithm = .spectral         // звук кусков со скоростью — как в экспорте
         // Прошлое — в корзину: новый план заменил его целиком.
         forget()
+        run = nil
+        key = newKey
+        loadingKey = nil
         player.replaceCurrentItem(with: item)
+        watch(item, key: newKey, preparing: true)
+        temps.removeAll()
+        temps = fresh
+    }
+
+    // Перепривязываем наблюдателей на каждый Play: callback старого запуска
+    // того же AVPlayerItem не получает идентификатор нового запуска.
+    private func watch(_ item: AVPlayerItem, key itemKey: String, preparing: Bool = false) {
+        forget()
+        let context = run
+        let sequence = startSeq
         endToken = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
-            guard let self = self, self.player.currentItem === item else { return }
+            guard let self = self, self.current(item, key: itemKey, run: context, sequence: sequence),
+                  self.wantPlay else { return }
             self.wantPlay = false
             self.stopLink()
-            self.send?(["event": "play-ended", "t": self.seconds()])
+            self.send?(self.event("play-ended", fields: ["t": self.seconds()]))
         }
         failToken = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemFailedToPlayToEndTime, object: item, queue: .main) { [weak self] note in
-            guard let self = self, self.player.currentItem === item else { return }
+            guard let self = self, self.current(item, key: itemKey, run: context, sequence: sequence) else { return }
             let err = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
-            self.failed(err?.localizedDescription ?? "видео не доиграло")
+            self.failed(err?.localizedDescription ?? "видео не доиграло", phase: "play", error: err)
         }
-        statusWatch = item.observe(\.status, options: [.new]) { [weak self] it, _ in
+        statusWatch = item.observe(\.status, options: [.initial, .new]) { [weak self] it, _ in
             guard it.status == .failed else { return }
             let reason = it.error?.localizedDescription ?? "видео не открылось"
             DispatchQueue.main.async {
-                guard let self = self, self.player.currentItem === it else { return }
-                self.failed(reason)
+                guard let self = self, self.current(it, key: itemKey, run: context, sequence: sequence) else { return }
+                self.failed(reason, kind: preparing ? "prepare" : "decode",
+                            phase: preparing ? "prepare" : "play", error: it.error)
             }
         }
-        temps.removeAll()
-        temps = fresh
-        key = newKey
-        loadingKey = nil
+    }
+
+    private func current(_ item: AVPlayerItem, key itemKey: String, run context: Run?, sequence: Int) -> Bool {
+        return player.currentItem === item && key == itemKey && run == context && startSeq == sequence
     }
 
     private func forget() {
@@ -214,19 +245,83 @@ final class NativePlayback: NSObject {
         statusWatch = nil
     }
 
+    private func event(_ name: String, fields: [String: Any] = [:]) -> [String: Any] {
+        var value = fields
+        value["event"] = name
+        if let key = key ?? loadingKey { value["key"] = key }
+        if let run = run {
+            value["key"] = run.key
+            value["requestId"] = run.requestId
+        }
+        return value
+    }
+
+    // Не передаём userInfo целиком: там бывают адреса оригиналов и полные пути.
+    private static func safe(_ text: String, limit: Int = 512) -> String {
+        let pattern = #"(?:[A-Za-z][A-Za-z0-9+.-]*://|[A-Za-z]:[\\/]|/)[^\s\"'<>]+"#
+        let clean = text.replacingOccurrences(of: pattern, with: "[redacted]", options: .regularExpression)
+        return String(clean.prefix(limit))
+    }
+
+    private func errorEvent(_ reason: String, kind: String, phase: String, key errorKey: String? = nil,
+                            error: Error? = nil, item: AVPlayerItem? = nil) -> [String: Any] {
+        var value: [String: Any] = ["event": "play-error", "reason": Self.safe(reason), "kind": kind, "phase": phase]
+        if let errorKey = errorKey { value["key"] = errorKey }
+        if let error = error as NSError? {
+            value["domain"] = Self.safe(error.domain, limit: 128)
+            value["code"] = error.code
+            var chain: [[String: Any]] = []
+            var next: NSError? = error
+            var visited = Set<ObjectIdentifier>()
+            for _ in 0..<4 {
+                guard let current = next, visited.insert(ObjectIdentifier(current)).inserted else { break }
+                if current.domain == AVFoundationErrorDomain && current.code == AVError.Code.mediaServicesWereReset.rawValue {
+                    value["kind"] = "services-reset"
+                } else if (current.domain == NSCocoaErrorDomain && current.code == NSUserCancelledError) ||
+                          (current.domain == NSURLErrorDomain && current.code == NSURLErrorCancelled) {
+                    if value["kind"] as? String != "services-reset" { value["kind"] = "cancelled" }
+                }
+                if current !== error {
+                    chain.append(["domain": Self.safe(current.domain, limit: 128), "code": current.code,
+                                  "reason": Self.safe(current.localizedDescription)])
+                }
+                next = current.userInfo[NSUnderlyingErrorKey] as? NSError
+            }
+            if !chain.isEmpty { value["underlying"] = chain }
+        }
+        if let entries = item?.errorLog()?.events.suffix(3), !entries.isEmpty {
+            value["errorLog"] = entries.map { entry -> [String: Any] in
+                return ["domain": Self.safe(entry.errorDomain, limit: 128), "code": entry.errorStatusCode,
+                        "reason": Self.safe(entry.errorComment ?? "")]
+            }
+        }
+        return value
+    }
+
     // Элемент не играет — странице ошибку (она сыграет сама), план — заново.
-    private func failed(_ reason: String, at position: Double? = nil) {
-        var event: [String: Any] = ["event": "play-error", "reason": reason, "t": position ?? seekTarget ?? seconds()]
-        if let key = key { event["key"] = key }
+    private func failed(_ reason: String, kind: String = "decode", phase: String,
+                        error: Error? = nil, at position: Double? = nil) {
+        var failure = errorEvent(reason, kind: kind, phase: phase, key: key ?? loadingKey,
+                                 error: error, item: player.currentItem)
+        failure["t"] = position ?? seekTarget ?? seconds()
+        if let run = run {
+            failure["key"] = run.key
+            failure["requestId"] = run.requestId
+        }
         wantPlay = false
         player.pause()
         stopLink()
         // Последняя картинка остаётся до play-hide: страница сначала
         // декодирует и рисует нужный кадр резервного проигрывателя.
         key = nil
+        loadingKey = nil
+        run = nil
+        gen += 1
+        startSeq += 1
         seekSeq += 1
         seekTarget = nil
-        send?(event)
+        forget()
+        send?(failure)
     }
 
     private func seconds() -> Double {
@@ -236,40 +331,81 @@ final class NativePlayback: NSObject {
 
     // MARK: - Игра
 
-    func start(_ t: Double) {
-        guard player.currentItem != nil, key != nil else {
-            send?(["event": "play-error", "reason": "превью ещё не собрано"])
+    func start(_ t: Double, key requestedKey: String? = nil, requestId: String? = nil) {
+        // Старый web не передаёт ни одного поля; половинный контекст не принимаем.
+        guard (requestedKey == nil) == (requestId == nil) else { return }
+        if let requestedKey = requestedKey, let activeKey = loadingKey ?? key, requestedKey != activeKey { return }
+        guard let item = player.currentItem, let itemKey = key, loadingKey == nil else {
+            var failure = errorEvent("превью ещё не собрано", kind: "not-ready", phase: "start", key: requestedKey ?? loadingKey)
+            if let requestId = requestId { failure["requestId"] = requestId }
+            send?(failure)
             return
         }
+        run = requestedKey.flatMap { key in requestId.map { Run(key: key, requestId: $0) } }
+        player.pause()
+        stopLink()
         MediaBridge.audioSession(nil)
         wantPlay = true
         startSeq += 1
         let mySeq = startSeq
+        let context = run
+        watch(item, key: itemKey)
+        if item.status == .failed {
+            failed(item.error?.localizedDescription ?? "видео не открылось", phase: "start", error: item.error)
+            return
+        }
         seekSeq += 1
         let mySeek = seekSeq
         seekTarget = max(0, t)
         lastPosition = max(0, t)
         player.seek(to: NativePlayback.time(t), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
             DispatchQueue.main.async {
-                guard let self = self, self.wantPlay, finished, mySeq == self.startSeq else { return }
+                guard let self = self, self.wantPlay, finished,
+                      self.current(item, key: itemKey, run: context, sequence: mySeq) else { return }
                 if mySeek == self.seekSeq { self.seekTarget = nil }
-                self.view.isHidden = false
+                self.playWatch = self.player.observe(\.timeControlStatus, options: [.new]) { [weak self] p, _ in
+                    guard p.timeControlStatus == .playing else { return }
+                    DispatchQueue.main.async {
+                        guard let self = self, self.wantPlay, self.playWatch != nil,
+                              self.current(item, key: itemKey, run: context, sequence: mySeq) else { return }
+                        self.view.isHidden = false
+                        self.startLink()
+                        self.send?(self.event("play-started", fields: ["t": self.seconds()]))
+                    }
+                }
                 self.player.play()
-                self.startLink()
-                self.send?(["event": "play-started", "t": self.seconds()])
             }
         }
     }
 
-    func pause() {
-        wantPlay = false
-        if seekTarget == nil { lastPosition = seconds() }
-        player.pause()
-        stopLink()
-        send?(["event": "play-paused", "t": seconds()])
+    private func accepts(key requestedKey: String?, requestId: String?, preparing: Bool = false) -> Bool {
+        if requestedKey == nil && requestId == nil { return true } // старый web
+        if let run = run { return requestedKey == run.key && requestId == run.requestId }
+        return preparing && requestId == nil && requestedKey != nil && requestedKey == (loadingKey ?? key)
     }
 
-    func seek(_ t: Double) {
+    func pause(key requestedKey: String? = nil, requestId: String? = nil) {
+        guard accepts(key: requestedKey, requestId: requestId) else { return }
+        wantPlay = false
+        startSeq += 1
+        seekSeq += 1
+        lastPosition = seekTarget ?? seconds()
+        seekTarget = nil
+        player.pause()
+        stopLink()
+        if let item = player.currentItem, let key = key { watch(item, key: key) }
+        send?(event("play-paused", fields: ["t": lastPosition]))
+    }
+
+    func seek(_ t: Double, key requestedKey: String? = nil, requestId: String? = nil) {
+        guard accepts(key: requestedKey, requestId: requestId) else { return }
+        if wantPlay && player.rate == 0 {
+            start(t, key: requestedKey, requestId: requestId)
+            return
+        }
+        guard let item = player.currentItem, let itemKey = key else { return }
+        let context = run
+        let sequence = startSeq
         let small = CMTime(value: 1, timescale: 30)
         seekSeq += 1
         let mySeek = seekSeq
@@ -277,7 +413,8 @@ final class NativePlayback: NSObject {
         lastPosition = max(0, t)
         player.seek(to: NativePlayback.time(t), toleranceBefore: small, toleranceAfter: small) { [weak self] finished in
             DispatchQueue.main.async {
-                guard let self = self, finished, mySeek == self.seekSeq else { return }
+                guard let self = self, finished, mySeek == self.seekSeq,
+                      self.current(item, key: itemKey, run: context, sequence: sequence) else { return }
                 self.seekTarget = nil
             }
         }
@@ -287,7 +424,9 @@ final class NativePlayback: NSObject {
         if player.rate == 0 { view.isHidden = true }
     }
 
-    func stop() {
+    func stop(key requestedKey: String? = nil, requestId: String? = nil) {
+        guard accepts(key: requestedKey, requestId: requestId, preparing: true) else { return }
+        startSeq += 1
         seekSeq += 1
         seekTarget = nil
         wantPlay = false
@@ -298,6 +437,7 @@ final class NativePlayback: NSObject {
         player.replaceCurrentItem(with: nil)
         key = nil
         loadingKey = nil
+        run = nil
         temps.removeAll()
         view.isHidden = true
     }
@@ -319,6 +459,8 @@ final class NativePlayback: NSObject {
     }
 
     private func stopLink() {
+        playWatch?.invalidate()
+        playWatch = nil
         link?.invalidate()
         link = nil
     }
@@ -328,6 +470,6 @@ final class NativePlayback: NSObject {
         if now - lastSent < 0.03 { return }
         lastSent = now
         lastPosition = seconds()
-        send?(["event": "play-time", "t": lastPosition, "rate": Double(player.rate)])
+        send?(event("play-time", fields: ["t": lastPosition, "rate": Double(player.rate)]))
     }
 }
