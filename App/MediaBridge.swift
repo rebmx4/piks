@@ -30,6 +30,11 @@ final class MediaBridge: NSObject {
     private weak var host: UIViewController?
 
     private var files: [String: URL] = [:]          // id -> файл ролика (оригинал или копия)
+    let videoRequests = MediaRequests<URL>()
+    var galleryRequests: [String: [() -> Void]] = [:]
+    var schemeRequests: [ObjectIdentifier: () -> Void] = [:]
+    var mediaSequence = 0
+    var diagnosedMedia = Set<String>()
     var audioFiles: [String: URL] = [:]             // id -> звук ролика отдельным m4a (MediaAudio.swift)
     private var stopped = Set<ObjectIdentifier>()   // задачи, которые WebKit отменил
     private var export: AVAssetExportSession?
@@ -131,7 +136,7 @@ final class MediaBridge: NSObject {
         case "audio":         makeAudioFile(body["id"] as? String)
         case "read":          readAudioBytes(body)
         case "media-read":    readMediaBytes(body)
-        case "gallery-albums", "gallery-assets", "gallery-use":
+        case "gallery-albums", "gallery-assets", "gallery-use", "gallery-cancel":
             galleryCommand(body["cmd"] as? String ?? "", body)
         case "file-put":      filePut(body)
         case "file-drop":     fileDrop(body)
@@ -251,46 +256,36 @@ final class MediaBridge: NSObject {
     // Файл ролика по номеру из адреса. Ответ всегда на главной очереди.
     // Сборка №17: «u…» — файл страницы, «l…» — ролик живого фото, «p…» у фото —
     // картинка JPEG (MediaFiles.swift).
-    func resolveFile(_ id: String, done: @escaping (URL?) -> Void) {
+    @discardableResult
+    func resolveFile(_ id: String, done: @escaping (URL?) -> Void) -> (() -> Void) {
         if let file = files[id], FileManager.default.isReadableFile(atPath: file.path) {
             done(file)
-            return
+            return {}
         }
         if id.hasPrefix("u") {
             let file = MediaBridge.userId(id).flatMap { MediaBridge.userFile($0) }
             if let file = file { files[id] = file }
             done(file)
-            return
+            return {}
         }
         // Сборка №22: оригинала в галерее нет (удалили, только в iCloud без
         // сети) — копия проекта (MediaKeep.swift).
         if id.hasPrefix("l") {
             resolveLive(id) { [weak self] url in done(url ?? self?.keptFallback(id)) }
-            return
+            return {}
         }
         guard let local = MediaBridge.localIdentifier(from: id),
               let asset = PHAsset.fetchAssets(withLocalIdentifiers: [local], options: nil).firstObject else {
             done(keptFallback(id))
-            return
+            return {}
         }
         if asset.mediaType == .image {
             resolvePhoto(id, asset) { [weak self] url in done(url ?? self?.keptFallback(id)) }
-            return
+            return {}
         }
-        let options = PHVideoRequestOptions()
-        options.isNetworkAccessAllowed = true
-        options.deliveryMode = .highQualityFormat
-        options.version = .current
-        PHImageManager.default().requestAVAsset(forVideo: asset, options: options) { [weak self] avAsset, _, _ in
-            let url = (avAsset as? AVURLAsset)?.url
-            DispatchQueue.main.async {
-                guard let url = url, FileManager.default.isReadableFile(atPath: url.path) else {
-                    done(self?.keptFallback(id))
-                    return
-                }
-                self?.files[id] = url
-                done(url)
-            }
+        return videoFile(asset) { [weak self] url in
+            if let url = url { self?.files[id] = url }
+            done(url ?? self?.keptFallback(id))
         }
     }
 

@@ -26,6 +26,11 @@ extension MediaBridge {
 
     func galleryCommand(_ cmd: String, _ body: [String: Any]) {
         let req = (body["id"] as? String) ?? ""
+        if cmd == "gallery-cancel" { cancelGallery(req); return }
+        if cmd == "gallery-use" {
+            guard galleryRequests[req] == nil else { return }
+            galleryRequests[req] = []
+        }
         galleryAccess(req) { [weak self] in
             guard let self = self else { return }
             switch cmd {
@@ -44,7 +49,10 @@ extension MediaBridge {
         PHPhotoLibrary.requestAuthorization(for: .readWrite) { [weak self] st in
             DispatchQueue.main.async {
                 if st == .authorized || st == .limited { then() }
-                else { self?.send(["event": "gallery-error", "id": req, "reason": "нет доступа к галерее"]) }
+                else {
+                    self?.cancelGallery(req)
+                    self?.send(["event": "gallery-error", "id": req, "reason": "нет доступа к галерее"])
+                }
             }
         }
     }
@@ -161,9 +169,31 @@ extension MediaBridge {
 
     // Сборка №17: фото — картинкой JPEG (kind «photo»), живое фото на вкладке
     // «Живые фото» (kind «live») — его роликом, номер «l…».
+    private func cancelGallery(_ req: String) {
+        let actions = galleryRequests.removeValue(forKey: req) ?? []
+        for cancel in actions { cancel() }
+    }
+
     private func galleryUse(_ req: String, _ ids: [String], kind: String? = nil) {
+        guard galleryRequests[req] != nil else { return }
         var out: [[String: Any]] = Array(repeating: [:], count: ids.count)
         let group = DispatchGroup()
+        var fractions = Array(repeating: 0.0, count: ids.count), reported = -1
+        let report: (Int, Double) -> Void = { [weak self] i, value in
+            guard let self = self, self.galleryRequests[req] != nil, !fractions.isEmpty else { return }
+            fractions[i] = max(fractions[i], min(1, max(0, value)))
+            let percent = Int(fractions.reduce(0, +) / Double(fractions.count) * 100)
+            if percent / 5 == reported { return }
+            reported = percent / 5
+            self.send(["event": "gallery-progress", "id": req, "progress": Double(percent) / 100])
+        }
+        let deadline = DispatchWorkItem { [weak self] in
+            guard let self = self, self.galleryRequests[req] != nil else { return }
+            self.cancelGallery(req)
+            self.send(["event": "gallery-error", "id": req, "reason": "Получение файлов заняло слишком долго. Повторите выбор."])
+        }
+        galleryRequests[req]?.append { deadline.cancel() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 600, execute: deadline)
         for (i, id) in ids.enumerated() {
             guard let local = MediaBridge.localIdentifier(from: id),
                   let asset = PHAsset.fetchAssets(withLocalIdentifiers: [local], options: nil).firstObject else {
@@ -212,10 +242,12 @@ extension MediaBridge {
                 continue
             }
             group.enter()
-            galleryFile(asset, version: .current) { [weak self] ua in
+            let cancel = videoFile(asset, progress: { report(i, $0) }) { [weak self] url in
+                DispatchQueue.global(qos: .userInitiated).async {
                 // Размер, длительность и метка цвета — не на главном потоке.
                 var row: [String: Any] = ["id": id, "error": "ролик недоступен"]
-                if let ua = ua {
+                if let url = url {
+                    let ua = AVURLAsset(url: url)
                     let attrs = try? FileManager.default.attributesOfItem(atPath: ua.url.path)
                     let secs = CMTimeGetSeconds(ua.duration)
                     row = ["id": id, "url": "\(MediaBridge.scheme)://orig/\(id).mp4",
@@ -225,32 +257,19 @@ extension MediaBridge {
                            "transfer": MediaBridge.transferOf(ua)]
                 }
                 DispatchQueue.main.async {
-                    if let ua = ua { self?.rememberFile(id, ua.url) }
+                    if let url = url { self?.rememberFile(id, url) }
                     out[i] = row
+                    report(i, 1)
                     group.leave()
                 }
+                }
             }
+            galleryRequests[req]?.append(cancel)
         }
         group.notify(queue: .main) { [weak self] in
-            self?.send(["event": "gallery-use", "id": req, "items": out])
-        }
-    }
-
-    // Файл ролика. Замедленное видео (slo-mo) в версии «как сейчас» телефон
-    // отдаёт сборкой (AVComposition), а не файлом — тогда берём оригинал.
-    private func galleryFile(_ asset: PHAsset, version: PHVideoRequestOptionsVersion, done: @escaping (AVURLAsset?) -> Void) {
-        let opts = PHVideoRequestOptions()
-        opts.isNetworkAccessAllowed = true          // ролик может лежать в iCloud
-        opts.deliveryMode = .highQualityFormat
-        opts.version = version
-        PHImageManager.default().requestAVAsset(forVideo: asset, options: opts) { [weak self] avAsset, _, _ in
-            if let ua = avAsset as? AVURLAsset, FileManager.default.isReadableFile(atPath: ua.url.path) {
-                done(ua)
-            } else if version == .current, let self = self {
-                self.galleryFile(asset, version: .original, done: done)
-            } else {
-                done(nil)
-            }
+            guard let self = self, self.galleryRequests[req] != nil else { return }
+            self.cancelGallery(req)
+            self.send(["event": "gallery-use", "id": req, "items": out])
         }
     }
 

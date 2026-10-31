@@ -72,6 +72,18 @@ jobs:
           )"
           echo "SIM_ID=$SIM_ID" >> "$GITHUB_ENV"
 
+      - name: Test media file request lifecycle
+        run: |
+          set -euo pipefail
+          xcodebuild test -project Piks.xcodeproj -scheme MediaRequestTests \
+            -destination 'platform=macOS' -parallel-testing-enabled NO \
+            -derivedDataPath build/ci/derived CODE_SIGNING_ALLOWED=NO \
+            > build/ci/media-request-tests.log 2>&1 || {
+              tail -n 100 build/ci/media-request-tests.log
+              exit 1
+            }
+          tail -n 12 build/ci/media-request-tests.log
+
       - name: Run reversal tests
         run: |
           set -euo pipefail

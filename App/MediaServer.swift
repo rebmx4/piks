@@ -86,8 +86,21 @@ extension MediaBridge: WKURLSchemeHandler {
             return
         }
 
-        resolveFile(id) { [weak self] fileURL in
+        let diagnose = diagnosedMedia.insert(id).inserted
+        mediaSequence += 1
+        let request = "stream-\(mediaSequence)", started = Date()
+        if diagnose { send(["event": "media-diagnostic", "req": request, "phase": "scheme-start"]) }
+        var waiting = true
+        let cancel = resolveFile(id) { [weak self] fileURL in
             guard let self = self else { return }
+            waiting = false
+            self.schemeRequests[key] = nil
+            guard !self.isStopped(key) else { return }
+            if diagnose {
+                self.send(["event": "media-diagnostic", "req": request,
+                           "phase": fileURL == nil ? "scheme-missing" : "scheme-file",
+                           "ms": Int(Date().timeIntervalSince(started) * 1000)])
+            }
             guard let fileURL = fileURL else {
                 self.respond(task, key: key, status: 404, headers: [:], body: Data())
                 return
@@ -95,6 +108,7 @@ extension MediaBridge: WKURLSchemeHandler {
             // Тип — по расширению файла: ролик, фото, звук страницы (сборка №17).
             self.serve(task, key: key, fileURL: fileURL, rangeHeader: rangeHeader, type: MediaBridge.mimeType(for: fileURL))
         }
+        if waiting { schemeRequests[key] = cancel }
     }
 
     private func serve(_ task: WKURLSchemeTask, key: ObjectIdentifier, fileURL: URL, rangeHeader: String?, type: String) {
@@ -149,7 +163,10 @@ extension MediaBridge: WKURLSchemeHandler {
     }
 
     func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {
-        markStopped(ObjectIdentifier(task))
+        let key = ObjectIdentifier(task)
+        markStopped(key)
+        let cancel = schemeRequests.removeValue(forKey: key)
+        cancel?()
     }
 
     // MARK: - Внутреннее
