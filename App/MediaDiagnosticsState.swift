@@ -18,6 +18,9 @@ final class MediaDiagnosticsState {
     private var lastWeb = 0.0, lastHealth = -Double.infinity, mainLast = 0.0
     private var pingSerial = 0
     private var mainPing: (token: Int, at: Double)?
+    private struct Context { var run: Int; var attempts: [String: Int] }
+    private var contexts: [String: Context] = [:]
+    private var contextOrder: [String] = []
 
     init(build: String, now: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 },
          wall: @escaping () -> Double = { Date().timeIntervalSince1970 * 1000 }) {
@@ -58,6 +61,7 @@ final class MediaDiagnosticsState {
         generation += 1; meta = nil; webSession = ""; lines.removeAll()
         serial = 0; dropped = 0; count = 0; windowAt = -.infinity
         mainPing = nil; mainLast = 0
+        contexts.removeAll(); contextOrder.removeAll()
     }
 
     private static let operations: Set<String> = [
@@ -74,20 +78,28 @@ final class MediaDiagnosticsState {
         "domain": ["AVFoundationErrorDomain", "NSOSStatusErrorDomain", "NSCocoaErrorDomain", "NSURLErrorDomain", "AVKitErrorDomain"]
     ]
 
-    func record(_ record: [String: Any]) {
+    func record(_ record: [String: Any], source: String = "native") {
         guard meta != nil, let op = record["op"] as? String, Self.operations.contains(op) else { return }
-        var clean: [String: Any] = ["op": op]
-        for key in ["wall", "epoch", "id", "attempt", "ms", "t", "code", "rate", "queue"] {
+        var clean: [String: Any] = ["op": op, "source": source == "web" ? "web" : "native"]
+        for key in ["wall", "epoch", "id", "attempt", "run", "ms", "t", "code", "rate", "queue"] {
             if let number = record[key] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() {
                 let value = number.doubleValue
                 if value.isFinite && abs(value) < 1e15 { clean[key] = (value * 1000).rounded() / 1000 }
             }
         }
-        for key in ["playing", "seeking", "held"] {
+        for key in ["playing", "seeking", "held", "correlated"] {
             if let value = record[key] as? NSNumber, CFGetTypeID(value) == CFBooleanGetTypeID() { clean[key] = value.boolValue }
         }
         for (key, allowed) in Self.enums {
             if let value = record[key] as? String, allowed.contains(value) { clean[key] = value }
+        }
+        if source != "web", op.hasPrefix("native.") || op.hasPrefix("received.") {
+            let context = (record["requestId"] as? String).flatMap { contexts[$0] }
+            let eventCommand = ["native.play-started": "play-start", "native.play-ended": "play-start",
+                                "native.play-paused": "play-pause", "native.play-time": "play-start"]
+            let command = op.hasPrefix("received.") ? String(op.dropFirst(9)) : eventCommand[op]
+            let attempt = command.flatMap { context?.attempts[$0] }
+            clean["run"] = context?.run; clean["attempt"] = attempt ?? 0; clean["correlated"] = attempt != nil
         }
         append(clean)
     }
@@ -107,7 +119,19 @@ final class MediaDiagnosticsState {
 
     func accepts(session: String) -> Bool { meta != nil && session == webSession }
 
-    func bindContext(requestId: String, run: Int, attempt: Int, command: String) {}
+    func bindContext(requestId: String, run: Int, attempt: Int, command: String) {
+        guard meta != nil, requestId.count <= 96,
+              requestId.range(of: "^[A-Za-z0-9._:-]{1,96}$", options: .regularExpression) != nil,
+              run > 0, run < 1000000000, attempt >= 0, attempt < 1000000000,
+              ["play-start", "play-pause", "play-seek", "play-stop"].contains(command) else { return }
+        if contexts[requestId] == nil {
+            contextOrder.append(requestId)
+            if contextOrder.count > 64 { contexts.removeValue(forKey: contextOrder.removeFirst()) }
+        }
+        var context = contexts[requestId] ?? Context(run: run, attempts: [:])
+        if context.run != run { context = Context(run: run, attempts: [:]) }
+        context.attempts[command] = attempt; contexts[requestId] = context
+    }
 
     func heartbeat(session: String, hidden: Bool) {
         guard accepts(session: session) else { return }
@@ -119,6 +143,7 @@ final class MediaDiagnosticsState {
     func setForeground(_ active: Bool) {
         guard foreground != active else { return }
         foreground = active; mainPing = nil; mainLast = 0; lastWeb = now(); lastHealth = -.infinity
+        if active { visible = true } // A frozen page cannot send its visible heartbeat.
         append(["op": "lifecycle", "active": active])
     }
 

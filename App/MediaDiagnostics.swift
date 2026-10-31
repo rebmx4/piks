@@ -53,9 +53,19 @@ final class MediaDiagnostics {
         case "diag-heartbeat":
             guard let session = body["session"] as? String, let hidden = body["hidden"] as? Bool else { return }
             observe { $0.state.heartbeat(session: session, hidden: hidden) }
+        case "diag-bind":
+            guard let session = body["session"] as? String, let value = body["context"] as? [String: Any],
+                  let requestId = value["requestId"] as? String, let run = value["run"] as? Int,
+                  let attempt = value["attempt"] as? Int, let command = value["command"] as? String else { return }
+            // Like a main-ping acknowledgement, context is control metadata.
+            // It must not be lost to the bounded queue of ordinary observations.
+            queue.async { [weak self] in
+                guard let self = self, self.state.accepts(session: session) else { return }
+                self.state.bindContext(requestId: requestId, run: run, attempt: attempt, command: command)
+            }
         case "diag-point":
             guard let session = body["session"] as? String, let record = body["record"] as? [String: Any] else { return }
-            observe { if $0.state.accepts(session: session) { $0.state.record(record) } }
+            observe { if $0.state.accepts(session: session) { $0.state.record(record, source: "web") } }
         default: break
         }
     }
@@ -63,8 +73,8 @@ final class MediaDiagnostics {
     func command(_ body: [String: Any]) {
         guard let cmd = body["cmd"] as? String,
               ["play-load", "play-start", "play-pause", "play-seek", "play-hide", "play-stop"].contains(cmd) else { return }
-        var record: [String: Any] = ["op": "received." + cmd]
-        record["t"] = body["t"]
+        var record: [String: Any] = ["op": "received." + cmd, "wall": Date().timeIntervalSince1970 * 1000]
+        record["t"] = body["t"]; record["requestId"] = body["requestId"]
         observe { $0.state.record(record) }
     }
 
@@ -77,8 +87,8 @@ final class MediaDiagnostics {
             guard now - lastPlaybackAt >= 1 else { gate.unlock(); return }
             lastPlaybackAt = now; gate.unlock()
         }
-        var record: [String: Any] = ["op": "native." + event]
-        for key in ["t", "rate", "code", "kind", "phase", "domain"] { record[key] = payload[key] }
+        var record: [String: Any] = ["op": "native." + event, "wall": Date().timeIntervalSince1970 * 1000]
+        for key in ["t", "rate", "code", "kind", "phase", "domain", "requestId"] { record[key] = payload[key] }
         observe { $0.state.record(record) }
     }
 
@@ -111,7 +121,7 @@ final class MediaDiagnostics {
             guard let self = self else { return }
             if let token = self.state.tick() {
                 DispatchQueue.main.async { [weak self] in
-                    self?.observe { $0.state.mainReplied(token) }
+                    self?.queue.async { [weak self] in self?.state.mainReplied(token) }
                 }
             }
             self.upload()
