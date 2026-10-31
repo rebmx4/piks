@@ -6,7 +6,7 @@ final class MediaDiagnosticsTests: XCTestCase {
                                      "site": "ryn-next", "ver": "20261101-test", "commit": "478b92b"]
     private let origin = URL(string: "https://rynpro.ru/ryn-next/")!
     private func enable(_ state: MediaDiagnosticsState) {
-        XCTAssertTrue(state.configure(meta, origin: origin, mainFrame: true, allowed: true))
+        XCTAssertTrue(state.configure(meta, origin: origin, mainFrame: true, allowed: true), "origin path: \(origin.path)")
     }
     private func body(_ batch: MediaDiagnosticsState.Batch?) throws -> [String: Any] {
         let batch = try XCTUnwrap(batch)
@@ -25,6 +25,7 @@ final class MediaDiagnosticsTests: XCTestCase {
             ("https://rynpro.ru/ryn/", true, true), ("https://example.com/ryn-next/", true, true),
             ("http://rynpro.ru/ryn-next/", true, true), (origin.absoluteString, false, true),
             (origin.absoluteString, true, false), ("https://rynpro.ru:444/ryn-next/", true, true)
+            , ("https://rynpro.ru/ryn-next-wrong/", true, true)
         ] {
             let state = MediaDiagnosticsState(build: "42")
             XCTAssertFalse(state.configure(meta, origin: URL(string: url), mainFrame: main, allowed: allowed))
@@ -131,5 +132,34 @@ final class MediaDiagnosticsTests: XCTestCase {
         _ = state.tick()
         let health = try XCTUnwrap(try records(body(state.takeBatch())).last { $0["op"] as? String == "health" })
         XCTAssertEqual(health["webGapMs"] as? Int, 11000)
+    }
+
+    func testReturningToForegroundCanDetectAWebPageThatNeverResumes() throws {
+        var now = 0.0
+        let state = MediaDiagnosticsState(build: "42", now: { now }); enable(state)
+        state.heartbeat(session: "abcdefgh23", hidden: true)
+        state.setForeground(false); now += 60000
+        state.setForeground(true)
+        let ping = try XCTUnwrap(state.tick())
+        state.mainReplied(ping)
+        now += 11000; _ = state.tick()
+        let health = try XCTUnwrap(try records(body(state.takeBatch())).last { $0["op"] as? String == "health" })
+        XCTAssertEqual(health["webGapMs"] as? Int, 11000)
+        XCTAssertEqual(health["mainGapMs"] as? Int, 0)
+    }
+
+    func testNativeAndWebShareOneAnonymousRunWithoutLeakingRequestIDs() throws {
+        let state = MediaDiagnosticsState(build: "42"); enable(state)
+        state.bindContext(requestId: "request-1", run: 9, attempt: 1, command: "play-start")
+        state.bindContext(requestId: "request-1", run: 9, attempt: 2, command: "play-pause")
+        state.record(["op": "received.play-pause", "requestId": "request-1"])
+        state.record(["op": "native.play-started", "requestId": "request-1"])
+        state.record(["op": "native.play-paused", "requestId": "request-1"])
+        let batch = try XCTUnwrap(state.takeBatch()), rows = try records(body(batch))
+        XCTAssertEqual(rows.suffix(3).compactMap { $0["run"] as? Int }, [9, 9, 9])
+        XCTAssertEqual(rows.suffix(3).compactMap { $0["attempt"] as? Int }, [2, 1, 2])
+        XCTAssertFalse(String(decoding: batch.data, as: UTF8.self).contains("request-1"))
+        state.record(["op": "native.play-started", "requestId": "unknown"])
+        XCTAssertEqual(try records(body(state.takeBatch())).last?["correlated"] as? Bool, false)
     }
 }

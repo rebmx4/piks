@@ -31,7 +31,8 @@ final class MediaDiagnosticsState {
 
     static func allows(origin: URL?, mainFrame: Bool, allowed: Bool) -> Bool {
         guard allowed, mainFrame, let url = origin, url.scheme == "https", url.host == "rynpro.ru",
-              url.port == nil || url.port == 443, url.path.hasPrefix("/ryn-next/") else { return false }
+              url.port == nil || url.port == 443,
+              url.path == "/ryn-next" || url.path.hasPrefix("/ryn-next/") else { return false }
         return true
     }
 
@@ -105,6 +106,8 @@ final class MediaDiagnosticsState {
     }
 
     func accepts(session: String) -> Bool { meta != nil && session == webSession }
+
+    func bindContext(requestId: String, run: Int, attempt: Int, command: String) {}
 
     func heartbeat(session: String, hidden: Bool) {
         guard accepts(session: session) else { return }
