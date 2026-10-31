@@ -12,6 +12,10 @@ on:
         description: Successful APIKS native check GitHub Actions run ID for that SHA
         required: true
         type: string
+      marketing_version:
+        description: Current App Store Connect version for both app targets
+        required: true
+        type: string
       upload_to_testflight:
         description: Upload validated IPA to the existing App Store Connect app
         required: true
@@ -42,6 +46,7 @@ jobs:
       PYTHONDONTWRITEBYTECODE: "1"
       SOURCE_REVISION: ${{ inputs.revision }}
       VERIFIED_RUN_ID: ${{ inputs.verified_run_id }}
+      APP_MARKETING_VERSION: ${{ inputs.marketing_version }}
       APP_STORE_APP_ID: "6794464999"
       APP_BUNDLE_ID: com.piks.app
       SHARE_BUNDLE_ID: com.piks.app.share
@@ -60,6 +65,7 @@ jobs:
           set -euo pipefail
           [[ "$SOURCE_REVISION" =~ ^[a-f0-9]{40}$ ]]
           [[ "$VERIFIED_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$APP_MARKETING_VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]
           mkdir -p build/ci
           curl --fail --silent --show-error --retry 3 \
             -H "Authorization: Bearer $GH_TOKEN" \
@@ -75,13 +81,14 @@ jobs:
           required = {
               'id': int(os.environ['VERIFIED_RUN_ID']),
               'head_sha': os.environ['SOURCE_REVISION'],
-              'head_branch': 'fix/play-context-20261030',
               'status': 'completed',
               'conclusion': 'success',
           }
           for field, expected in required.items():
               if run.get(field) != expected:
                   raise SystemExit(f'Native check {field} does not match the requested source')
+          if run.get('head_branch') not in ('fix/play-context-20261030', 'ci/github-testflight-20261030'):
+              raise SystemExit('Expected an approved APIKS native source branch')
           if run.get('repository', {}).get('full_name') != os.environ['GITHUB_REPOSITORY']:
               raise SystemExit('Native check belongs to another repository')
           if str(run.get('path', '')).partition('@')[0] != '.github/workflows/piks-native-check.yml':
@@ -194,7 +201,8 @@ jobs:
             -configuration Release -destination 'generic/platform=iOS' \
             -archivePath "$PWD/build/ci/Piks.xcarchive" \
             -derivedDataPath "$PWD/build/ci/derived" \
-            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" > build/ci/archive.log 2>&1 || {
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" MARKETING_VERSION="$APP_MARKETING_VERSION" \
+            > build/ci/archive.log 2>&1 || {
               tail -n 120 build/ci/archive.log
               exit 1
             }
@@ -243,6 +251,8 @@ jobs:
                   raise SystemExit(f'Wrong bundle ID in {bundle.name}')
               if info.get('CFBundleVersion') != os.environ['BUILD_NUMBER']:
                   raise SystemExit(f'Wrong build number in {bundle.name}')
+              if info.get('CFBundleShortVersionString') != os.environ['APP_MARKETING_VERSION']:
+                  raise SystemExit(f'Wrong marketing version in {bundle.name}')
               if entitlements.get('application-identifier') != f"{os.environ['APPLE_TEAM_ID']}.{bundle_id}":
                   raise SystemExit(f'Wrong application identifier in {bundle.name}')
               if entitlements.get('com.apple.developer.team-identifier') != os.environ['APPLE_TEAM_ID']:
