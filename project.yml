@@ -126,6 +126,8 @@ targets:
     sources:
       - path: Tests/MediaRequestTests.swift
       - path: App/MediaRequests.swift
+      - path: Tests/MediaDiagnosticsTests.swift
+      - path: App/MediaDiagnosticsState.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.piks.media.request.tests
