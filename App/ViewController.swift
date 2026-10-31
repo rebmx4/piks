@@ -14,6 +14,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
     private var wrapperInputBaseline: WrapperInputBaseline!
     private var wrapperGestures: [UIGestureRecognizer] = []
     private var appUpdatePresenter: AppUpdatePresenter?
+    private var diagnosticLifecycle: [NSObjectProtocol] = []
 
     private let bgColor = UIColor(white: 16 / 255.0, alpha: 1) // #101010
     private let accent = UIColor(red: 205 / 255.0, green: 183 / 255.0, blue: 122 / 255.0, alpha: 1) // #cdb77a
@@ -125,6 +126,15 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
             pv.trailingAnchor.constraint(equalTo: webView.trailingAnchor),
         ])
         mediaBridge.attachPlayback(playback)
+        if let diagnostics = mediaBridge.diagnostics {
+            diagnostics.setForeground(UIApplication.shared.applicationState == .active)
+            for (name, active) in [(UIApplication.didBecomeActiveNotification, true),
+                                   (UIApplication.willResignActiveNotification, false)] {
+                diagnosticLifecycle.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak diagnostics] _ in
+                    diagnostics?.setForeground(active)
+                })
+            }
+        }
 
         configureWrapperInput()
         webView.addObserver(self, forKeyPath: #keyPath(WKWebView.estimatedProgress), options: .new, context: nil)
@@ -175,6 +185,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
         }
         trace.report = { [weak self, weak menu] record in
             guard let self = self, let web = self.webView else { return }
+            self.mediaBridge.diagnostics?.input(record)
             var payload = record
             payload["os"] = UIDevice.current.systemVersion
             payload["policy"] = [
@@ -306,10 +317,16 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
     }
 
     deinit {
+        for observer in diagnosticLifecycle { NotificationCenter.default.removeObserver(observer) }
+        mediaBridge?.diagnostics?.stop()
         webView?.removeObserver(self, forKeyPath: #keyPath(WKWebView.estimatedProgress))
     }
 
     // MARK: - WKNavigationDelegate
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        mediaBridge.diagnostics?.stop()
+    }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         refreshControl.endRefreshing()

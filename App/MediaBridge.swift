@@ -43,6 +43,8 @@ final class MediaBridge: NSObject {
     private var lastExport: URL?                    // последний готовый файл — для «Поделиться»
     let previews = PreviewCopies()                  // копии роликов для просмотра (сборка №18, MediaPreview.swift)
     var playback: NativePlayback?                   // нативное превью (сборка №23, NativePlayback.swift)
+    let diagnostics: MediaDiagnostics? = canChooseSite
+        ? MediaDiagnostics(build: Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "") : nil
     var reverser: (req: String, engine: ReverseMedia)? // реверсия выбранного фрагмента (MediaReverse.swift)
 
     // Что умеет эта сборка. Страница читает это до загрузки своих модулей
@@ -78,6 +80,7 @@ final class MediaBridge: NSObject {
                     "mic", "vision", "preview", "stereo", "inbox", "keep", "cache", "play", "reverse", "reverse-proxy", "mediaRead",
                     "exportPresentation", "play-context"]
         if canChooseSite { caps.insert("site", at: 4) }
+        if canChooseSite { caps.append("media-diagnostics") }
         if #available(iOS 17.0, *) { caps.append("subject") }
         let list = caps.map { "'" + $0 + "'" }.joined(separator: ", ")
         return "window.__ryndiApp = { version: 3, build: '\(build)', caps: [\(list)] };"
@@ -124,6 +127,12 @@ final class MediaBridge: NSObject {
 
     func handle(_ message: WKScriptMessage) {
         guard let body = message.body as? [String: Any] else { return }
+        if let cmd = body["cmd"] as? String, cmd.hasPrefix("diag-") {
+            diagnostics?.handle(body, origin: message.frameInfo.request.url,
+                                mainFrame: message.frameInfo.isMainFrame, allowed: canChooseSite)
+            return
+        }
+        diagnostics?.command(body)
         switch body["cmd"] as? String {
         case "ping":          send(["event": "ready"])
         case "pick":          pickVideo()
@@ -296,6 +305,7 @@ final class MediaBridge: NSObject {
     }
 
     func send(_ payload: [String: Any]) {
+        diagnostics?.playback(payload)
         guard let webView = webView,
               let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8) else { return }
