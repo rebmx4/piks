@@ -379,7 +379,7 @@ final class RenderScene {
             // A file can contain a leading empty edit before its first sample.
             // Hold that source's first decoded frame only inside the known gap;
             // never substitute another clip or hide a later decoder failure.
-            guard let buffer = frame(item.trackID) ?? (t < item.leadingUntil - 1e-6 ? item.leadingFrame : nil)
+            guard let buffer = t < item.leadingUntil - 1e-6 ? item.leadingFrame : frame(item.trackID)
             else { return nil }
             source = CIImage(cvPixelBuffer: buffer)
             raw = CGSize(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
@@ -795,8 +795,14 @@ final class NativeExporter {
     }
 
     private static func leadingSample(_ asset: AVURLAsset, _ track: AVAssetTrack) throws -> (CVPixelBuffer, Double)? {
-        guard track.segments.first?.isEmpty == true else { return nil }
+        guard track.segments.first?.isEmpty == true,
+              let content = track.segments.first(where: { !$0.isEmpty }) else { return nil }
+        let first = CMTimeGetSeconds(content.timeMapping.target.start)
+        guard first.isFinite && first > 0 else { return nil }
         let reader = try AVAssetReader(asset: asset)
+        // AVFoundation synthesizes a black sample at time zero for the empty
+        // edit. Decode from the real segment, not from that synthetic sample.
+        reader.timeRange = CMTimeRange(start: content.timeMapping.target.start, end: asset.duration)
         let output = AVAssetReaderTrackOutput(track: track,
             outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
         guard reader.canAdd(output) else { throw ExportError("первый кадр исходника не читается") }
@@ -806,8 +812,7 @@ final class NativeExporter {
         guard let sample = output.copyNextSampleBuffer(), let buffer = CMSampleBufferGetImageBuffer(sample) else {
             throw reader.error ?? ExportError("в исходнике нет первого видеокадра")
         }
-        let first = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))
-        return first.isFinite && first > 0 ? (buffer, first) : nil
+        return (buffer, first)
     }
 
     // Кусок исходника на дорожку. Дорожка идёт по порядку: пустое место

@@ -35,24 +35,10 @@ final class NativeExportTests: XCTestCase {
         if delayed {
             let asset = AVURLAsset(url: overlay)
             let track = try XCTUnwrap(asset.tracks(withMediaType: .video).first)
-            print("LEADING track", track.timeRange, "segments", track.segments.map {
-                ["empty": $0.isEmpty, "source": String(describing: $0.timeMapping.source),
-                 "target": String(describing: $0.timeMapping.target)] as [String: Any]
-            })
-            let reader = try AVAssetReader(asset: asset)
-            let output = AVAssetReaderTrackOutput(track: track,
-                outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
-            reader.add(output); XCTAssertTrue(reader.startReading())
-            var firstImageTime: Double?
-            for _ in 0..<8 {
-                guard let sample = output.copyNextSampleBuffer() else { break }
-                let time = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))
-                print("LEADING sample", time, "duration", CMTimeGetSeconds(CMSampleBufferGetDuration(sample)),
-                      "image", CMSampleBufferGetImageBuffer(sample) != nil, "samples", CMSampleBufferGetNumSamples(sample))
-                if firstImageTime == nil && CMSampleBufferGetImageBuffer(sample) != nil { firstImageTime = time }
-            }
-            XCTAssertGreaterThan(try XCTUnwrap(firstImageTime), 0.08, "fixture first image timestamp")
-            reader.cancelReading()
+            XCTAssertEqual(track.segments.first?.isEmpty, true)
+            let content = try XCTUnwrap(track.segments.first(where: { !$0.isEmpty }))
+            XCTAssertGreaterThan(CMTimeGetSeconds(content.timeMapping.target.start), 0.08,
+                                 "fixture must contain a real leading empty edit")
         }
         func item(_ media: String, _ at: Double, _ from: Double, _ duration: Double, _ row: [Double]) -> [String: Any] {
             ["media": media, "at": at, "from": from, "dur": duration, "k0": Int((at * 30).rounded()), "frames": [row]]
