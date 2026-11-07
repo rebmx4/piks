@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - fix/play-context-20261030
+      - fix/export-recovery-20261107
   workflow_dispatch:
 
 permissions:
@@ -83,6 +84,19 @@ jobs:
               exit 1
             }
           tail -n 12 build/ci/media-request-tests.log
+
+      - name: Test real native exports
+        run: |
+          set -euo pipefail
+          xcodebuild test -project Piks.xcodeproj -scheme ExportMacTests \
+            -destination 'platform=macOS' -parallel-testing-enabled NO \
+            -derivedDataPath build/ci/export-derived \
+            -resultBundlePath build/ci/export.xcresult CODE_SIGNING_ALLOWED=NO \
+            > build/ci/export-tests.log 2>&1 || {
+              tail -n 160 build/ci/export-tests.log
+              exit 1
+            }
+          tail -n 14 build/ci/export-tests.log
 
       - name: Run reversal tests
         run: |

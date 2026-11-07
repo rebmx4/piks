@@ -4,6 +4,99 @@ import CoreVideo
 import CoreImage
 
 final class NativeExportTests: XCTestCase {
+    func testTwoRealVideoSourcesExportBothLayersFromTheFirstFrame() async throws {
+        try await verifyLayers()
+    }
+
+    func testPositiveFirstSourceTimestampDoesNotLoseTheOverlayAtZero() async throws {
+        try await verifyLayers(delayed: true)
+    }
+
+    func testOverlayStartingLaterKeepsTheMainVideoBeforeItsStart() async throws {
+        try await verifyLayers(overlayAt: 0.5)
+    }
+
+    func testTheSameRealAssetCanBeUsedInTwoSimultaneousLayers() async throws {
+        try await verifyLayers(sameSource: true)
+    }
+
+    func testBothRealLayersSurviveCutsAndTrimmedSourceRanges() async throws {
+        try await verifyLayers(cut: true)
+    }
+
+    private func verifyLayers(delayed: Bool = false, overlayAt: Double = 0,
+                              sameSource: Bool = false, cut: Bool = false) async throws {
+        let bundle = Bundle(for: Self.self)
+        let main = try XCTUnwrap(bundle.url(forResource: "export-red", withExtension: "mp4", subdirectory: "Fixtures"))
+        let overlay: URL
+        if sameSource { overlay = main }
+        else { overlay = try XCTUnwrap(bundle.url(forResource:
+            delayed ? "export-blue-delayed" : "export-blue", withExtension: "mp4", subdirectory: "Fixtures")) }
+        if delayed {
+            let track = try XCTUnwrap(AVURLAsset(url: overlay).tracks(withMediaType: .video).first)
+            XCTAssertGreaterThan(CMTimeGetSeconds(track.timeRange.start), 0.08,
+                                 "fixture must really have a leading source timestamp")
+        }
+        func item(_ media: String, _ at: Double, _ from: Double, _ duration: Double, _ row: [Double]) -> [String: Any] {
+            ["media": media, "at": at, "from": from, "dur": duration, "k0": Int((at * 30).rounded()), "frames": [row]]
+        }
+        let full: [Double] = [64, 0, 0, 96, 0, 0, 1]
+        let half: [Double] = [32, 0, 0, 96, 32, 0, 1]
+        let mains = cut ? [item("m1", 0, 0, 1, full), item("m1", 1, 1.25, 1, full)] : [item("m1", 0, 0, 2, full)]
+        let overlays = cut ? [item("m2", 0, 0, 1, half), item("m2", 1, 1.25, 1, half)] :
+            [item("m2", overlayAt, overlayAt, 2 - overlayAt, half)]
+        let plan = try XCTUnwrap(ExportPlan(json: ["width": 64, "height": 96, "fps": 30,
+            "frames": 60, "bitrate": 800_000, "codec": "h264", "save": false,
+            "media": [["id": "m1", "url": "ryndi-media://orig/red.mp4"],
+                      ["id": "m2", "url": "ryndi-media://orig/blue.mp4"]],
+            "layers": [["items": mains], ["items": overlays]],
+            "sounds": [["media": "m1", "at": 0, "from": 0, "dur": 2, "volume": 1],
+                       ["media": "m2", "at": overlayAt, "from": overlayAt, "dur": 2 - overlayAt, "volume": 0.5]]]))
+        let done = expectation(description: "two real layers exported")
+        var result: URL?, failure: [String: Any]?
+        let engine = NativeExporter(job: UUID().uuidString, plan: plan, send: { event in
+            if event["event"] as? String == "export-error" { failure = event }
+        }, resolve: { id, callback in callback(id == "red" ? main : overlay) })
+        engine.onFinish = { result = $0; done.fulfill() }
+        engine.start()
+        await fulfillment(of: [done], timeout: 30)
+        if result == nil { engine.cancel() }
+        withExtendedLifetime(engine) {}
+        XCTAssertNil(failure, String(describing: failure))
+        let url = try XCTUnwrap(result, String(describing: failure))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let asset = AVURLAsset(url: url)
+        let video = try XCTUnwrap(asset.tracks(withMediaType: .video).first)
+        let audio = try XCTUnwrap(asset.tracks(withMediaType: .audio).first)
+        XCTAssertEqual(CMTimeGetSeconds(asset.duration), 2, accuracy: 0.05)
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: video,
+            outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+        reader.add(output); XCTAssertTrue(reader.startReading())
+        var count = 0
+        while let sample = output.copyNextSampleBuffer() {
+            let time = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))
+            XCTAssertEqual(time, Double(count) / 30, accuracy: 0.0001)
+            let buffer = try XCTUnwrap(CMSampleBufferGetImageBuffer(sample))
+            CVPixelBufferLockBaseAddress(buffer, .readOnly)
+            let bytes = try XCTUnwrap(CVPixelBufferGetBaseAddress(buffer)).assumingMemoryBound(to: UInt8.self)
+            let row = CVPixelBufferGetBytesPerRow(buffer)
+            let left = 50 * row + 8 * 4, right = 50 * row + 48 * 4
+            XCTAssertGreaterThan(Int(bytes[left + 2]), Int(bytes[left]) + 80, "main must remain visible at frame \(count)")
+            if time + 0.0001 >= overlayAt && !sameSource {
+                XCTAssertGreaterThan(Int(bytes[right]), Int(bytes[right + 2]) + 80, "overlay must be visible at frame \(count)")
+            } else {
+                XCTAssertGreaterThan(Int(bytes[right + 2]), Int(bytes[right]) + 80)
+            }
+            CVPixelBufferUnlockBaseAddress(buffer, .readOnly)
+            count += 1
+        }
+        XCTAssertEqual(reader.status, .completed, String(describing: reader.error))
+        XCTAssertEqual(count, 60)
+        XCTAssertEqual(ExportAudio.channels(audio), 2)
+        XCTAssertEqual(CMTimeGetSeconds(audio.timeRange.duration), 2, accuracy: 0.05)
+    }
+
     private func scene(_ ranges: [(Double, Double)] = [(0, 2)],
                        presentation: ExportPresentation? = nil) -> RenderScene {
         let items = ranges.map { at, end in
