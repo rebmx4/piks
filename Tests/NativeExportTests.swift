@@ -33,9 +33,15 @@ final class NativeExportTests: XCTestCase {
         else { overlay = try XCTUnwrap(bundle.url(forResource:
             delayed ? "export-blue-delayed" : "export-blue", withExtension: "mp4", subdirectory: "Fixtures")) }
         if delayed {
-            let track = try XCTUnwrap(AVURLAsset(url: overlay).tracks(withMediaType: .video).first)
-            XCTAssertGreaterThan(CMTimeGetSeconds(track.timeRange.start), 0.08,
+            let asset = AVURLAsset(url: overlay)
+            let track = try XCTUnwrap(asset.tracks(withMediaType: .video).first)
+            let reader = try AVAssetReader(asset: asset)
+            let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+            reader.add(output); XCTAssertTrue(reader.startReading())
+            let first = try XCTUnwrap(output.copyNextSampleBuffer())
+            XCTAssertGreaterThan(CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(first)), 0.08,
                                  "fixture must really have a leading source timestamp")
+            reader.cancelReading()
         }
         func item(_ media: String, _ at: Double, _ from: Double, _ duration: Double, _ row: [Double]) -> [String: Any] {
             ["media": media, "at": at, "from": from, "dur": duration, "k0": Int((at * 30).rounded()), "frames": [row]]

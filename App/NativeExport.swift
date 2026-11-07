@@ -53,6 +53,8 @@ import Photos
 
 struct ExportPlan {
     struct Item {
+        var leadingFrame: CVPixelBuffer? = nil
+        var leadingUntil: Double = 0
         let media: String
         let at: Double
         let from: Double
@@ -374,7 +376,11 @@ final class RenderScene {
             source = still
             raw = still.extent.size
         } else {
-            guard let buffer = frame(item.trackID) else { return nil }
+            // A file can contain a leading empty edit before its first sample.
+            // Hold that source's first decoded frame only inside the known gap;
+            // never substitute another clip or hide a later decoder failure.
+            guard let buffer = frame(item.trackID) ?? (t < item.leadingUntil - 1e-6 ? item.leadingFrame : nil)
+            else { return nil }
             source = CIImage(cvPixelBuffer: buffer)
             raw = CGSize(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
         }
@@ -788,6 +794,22 @@ final class NativeExporter {
         return CMTime(seconds: seconds, preferredTimescale: NativeExporter.scale)
     }
 
+    private static func leadingSample(_ asset: AVURLAsset, _ track: AVAssetTrack) throws -> (CVPixelBuffer, Double)? {
+        guard track.segments.first?.isEmpty == true else { return nil }
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: track,
+            outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+        guard reader.canAdd(output) else { throw ExportError("первый кадр исходника не читается") }
+        reader.add(output)
+        guard reader.startReading() else { throw reader.error ?? ExportError("первый кадр исходника не читается") }
+        defer { reader.cancelReading() }
+        guard let sample = output.copyNextSampleBuffer(), let buffer = CMSampleBufferGetImageBuffer(sample) else {
+            throw reader.error ?? ExportError("в исходнике нет первого видеокадра")
+        }
+        let first = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))
+        return first.isFinite && first > 0 ? (buffer, first) : nil
+    }
+
     // Кусок исходника на дорожку. Дорожка идёт по порядку: пустое место
     // до куска заполняется пустотой, нахлёст от округления срезается.
     // Скорость (сборка №17): srcDur секунд исходника ложатся на dur секунд
@@ -873,6 +895,8 @@ final class NativeExporter {
         var videoIDs: [CMPersistentTrackID] = []
         var firstTrack: AVMutableCompositionTrack? = nil
         var sceneLayers: [[RenderScene.Item]] = []
+        var leading: [String: (CVPixelBuffer, Double)] = [:]
+        var inspectedLeading = Set<String>()
 
         // Видео: на каждый слой дорожки по роликам — разные ролики не
         // смешиваются на одной дорожке. Куски одного слоя, идущие одновременно
@@ -909,9 +933,19 @@ final class NativeExporter {
                 }
                 guard let chosen = track else { throw ExportError("не создаётся дорожка видео") }
                 try place(chosen, src, at: it.at, from: it.from, dur: it.dur, srcDur: it.src, ends: &ends)
-                items.append(RenderScene.Item(trackID: chosen.trackID, still: nil, at: it.at, end: it.at + it.dur,
+                if !inspectedLeading.contains(it.media) {
+                    if let first = try leadingSample(a, src) { leading[it.media] = first }
+                    inspectedLeading.insert(it.media)
+                }
+                var item = RenderScene.Item(trackID: chosen.trackID, still: nil, at: it.at, end: it.at + it.dur,
                                               k0: it.k0, frames: it.frames, pref: src.preferredTransform,
-                                              fx: it.fx, crop: it.crop, mask: it.mask.map { maskImage($0) }, ci: it.ci))
+                                              fx: it.fx, crop: it.crop, mask: it.mask.map { maskImage($0) }, ci: it.ci)
+                if let (buffer, first) = leading[it.media], it.from < first {
+                    let rate = max(0.01, (it.src ?? it.dur) / max(it.dur, 0.000001))
+                    item.leadingFrame = buffer
+                    item.leadingUntil = min(item.end, it.at + (first - it.from) / rate)
+                }
+                items.append(item)
             }
             // Нахлёст меньше полукадра — округление плана, а не переход: в
             // кадре один кусок, как до сборки №17 (первый по списку).
