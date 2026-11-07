@@ -1241,6 +1241,7 @@ final class NativeExporter {
                       transform: ((CMSampleBuffer) -> CMSampleBuffer?)? = nil) {
         group.enter()
         var finished = false
+        var sentPoster = false
         input.requestMediaDataWhenReady(on: queue) {
             while input.isReadyForMoreMediaData && !finished {
                 if self.cancelled {
@@ -1256,6 +1257,10 @@ final class NativeExporter {
                     return
                 }
                 if let seconds = seconds {
+                    if !sentPoster {
+                        sentPoster=true
+                        self.poster(sample)
+                    }
                     let t = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))
                     self.progress(t / seconds)
                 }
@@ -1274,6 +1279,16 @@ final class NativeExporter {
         guard now.timeIntervalSince(lastProgress) > 0.25 else { return }
         lastProgress = now
         send(["event": "export-progress", "job": job, "value": max(0, min(1, value))])
+    }
+
+    private func poster(_ sample: CMSampleBuffer) {
+        guard let buffer=CMSampleBufferGetImageBuffer(sample) else { return }
+        let image=CIImage(cvPixelBuffer:buffer)
+        let scale=min(1,640/max(image.extent.width,image.extent.height))
+        let thumbnail=image.transformed(by:CGAffineTransform(scaleX:scale,y:scale))
+        guard let color=CGColorSpace(name:CGColorSpace.sRGB),
+              let png=RenderScene.context.pngRepresentation(of:thumbnail,format:.RGBA8,colorSpace:color) else { return }
+        send(["event":"export-poster","job":job,"png":png.base64EncodedString()])
     }
 
     static func validateOutput(_ url: URL, duration: Double, fps: Int, audio: Bool) throws {

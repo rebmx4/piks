@@ -41,6 +41,7 @@ final class MediaBridge: NSObject {
     private var progressTimer: Timer?
     private var exporter: NativeExporter?           // идущий нативный экспорт
     private var lastExport: URL?                    // последний готовый файл — для «Поделиться»
+    let exportPhotos = ExportPhotoSave()
     let previews = PreviewCopies()                  // копии роликов для просмотра (сборка №18, MediaPreview.swift)
     var playback: NativePlayback?                   // нативное превью (сборка №23, NativePlayback.swift)
     let diagnostics: MediaDiagnostics? = canChooseSite
@@ -78,7 +79,7 @@ final class MediaBridge: NSObject {
         var caps = ["pick", "export", "photos", "share", "wave", "audio", "ramps", "read", "adjust", "gallery",
                     "speed", "crop", "mask", "overlap", "cifilter", "stills", "files", "photo", "live", "haptic",
                     "mic", "vision", "preview", "stereo", "inbox", "keep", "cache", "play", "reverse", "reverse-proxy", "mediaRead",
-                    "exportPresentation", "play-context"]
+                    "exportPresentation", "play-context", "exportPhotosV1", "exportPosterV1"]
         if canChooseSite { caps.insert("site", at: 4) }
         if canChooseSite { caps.append("media-diagnostics") }
         if #available(iOS 17.0, *) { caps.append("subject") }
@@ -140,6 +141,9 @@ final class MediaBridge: NSObject {
         case "export":        startExport(body["plan"] as? String, job: body["job"] as? String)
         case "export-cancel": exporter?.cancel()
         case "export-share":  shareExport()
+        case "export-save-file":
+            saveExportFile(body, allowed: ExportPhotoRequest.allows(message.frameInfo.request.url,
+                                                                  mainFrame: message.frameInfo.isMainFrame))
         case "site":          setSite(body["value"] as? String)
         case "wave":          makeWave(body["id"] as? String, buckets: (body["buckets"] as? Int) ?? 2000)
         case "audio":         makeAudioFile(body["id"] as? String)
