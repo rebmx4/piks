@@ -35,12 +35,23 @@ final class NativeExportTests: XCTestCase {
         if delayed {
             let asset = AVURLAsset(url: overlay)
             let track = try XCTUnwrap(asset.tracks(withMediaType: .video).first)
+            print("LEADING track", track.timeRange, "segments", track.segments.map {
+                ["empty": $0.isEmpty, "source": String(describing: $0.timeMapping.source),
+                 "target": String(describing: $0.timeMapping.target)] as [String: Any]
+            })
             let reader = try AVAssetReader(asset: asset)
-            let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+            let output = AVAssetReaderTrackOutput(track: track,
+                outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
             reader.add(output); XCTAssertTrue(reader.startReading())
-            let first = try XCTUnwrap(output.copyNextSampleBuffer())
-            XCTAssertGreaterThan(CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(first)), 0.08,
-                                 "fixture must really have a leading source timestamp")
+            var firstImageTime: Double?
+            for _ in 0..<8 {
+                guard let sample = output.copyNextSampleBuffer() else { break }
+                let time = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))
+                print("LEADING sample", time, "duration", CMTimeGetSeconds(CMSampleBufferGetDuration(sample)),
+                      "image", CMSampleBufferGetImageBuffer(sample) != nil, "samples", CMSampleBufferGetNumSamples(sample))
+                if firstImageTime == nil && CMSampleBufferGetImageBuffer(sample) != nil { firstImageTime = time }
+            }
+            XCTAssertGreaterThan(try XCTUnwrap(firstImageTime), 0.08, "fixture first image timestamp")
             reader.cancelReading()
         }
         func item(_ media: String, _ at: Double, _ from: Double, _ duration: Double, _ row: [Double]) -> [String: Any] {
