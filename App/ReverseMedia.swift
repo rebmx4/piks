@@ -97,9 +97,16 @@ final class ReverseMedia {
         let hdr = transfer == (kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG as String)
             || transfer == (kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ as String)
         let pixelFormat = hdr ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        #if targetEnvironment(simulator)
+        // Simulator has no iPhone HEVC hardware encoder. Its software path can
+        // stall both writer inputs; hardware HEVC is covered by ReverseMacTests.
+        let codec: AVVideoCodecType = hdr ? .hevc : .h264
+        #else
+        let codec: AVVideoCodecType = .hevc
+        #endif
         mark("source-format", ["from": from, "duration": duration, "width": width, "height": height, "fps": fps,
                                "sourceCodec": ext.map { CMFormatDescriptionGetMediaSubType($0) } ?? 0,
-                               "pixelFormat": pixelFormat, "writerCodec": "hevc", "transfer": transfer])
+                               "pixelFormat": pixelFormat, "writerCodec": codec.rawValue, "transfer": transfer])
         let rangeStart = time(from), rangeEnd = time(from + duration)
         mark("video-index")
         let frames = try frameTimes(asset: asset, track: track, from: rangeStart, to: rangeEnd, fps: fps)
@@ -129,7 +136,7 @@ final class ReverseMedia {
         var compression: [String: Any] = [AVVideoAverageBitRateKey: bitrate, AVVideoMaxKeyFrameIntervalKey: max(1, Int(fps)),
                                         AVVideoAllowFrameReorderingKey: false]
         if hdr { compression[AVVideoProfileLevelKey] = kVTProfileLevel_HEVC_Main10_AutoLevel as String }
-        var settings: [String: Any] = [AVVideoCodecKey: AVVideoCodecType.hevc,
+        var settings: [String: Any] = [AVVideoCodecKey: codec,
             AVVideoWidthKey: width, AVVideoHeightKey: height, AVVideoCompressionPropertiesKey: compression]
         if let desc = ext {
             var color: [String: Any] = [:]

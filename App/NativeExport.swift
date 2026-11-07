@@ -1183,7 +1183,7 @@ final class NativeExporter {
                 reader.add(output)
                 audioIn = input
                 audioOut = output
-            }
+            } else { throw ExportError("кодировщик не принимает ожидаемый звук") }
         }
 
         self.reader = reader
@@ -1211,7 +1211,7 @@ final class NativeExporter {
         }
         let hasAudio = audioIn != nil
         group.notify(queue: work) {
-            self.complete(reader, writer, out, codec: codec, audio: hasAudio)
+            self.complete(reader, writer, out, codec: codec, audio: hasAudio, duration: seconds)
         }
     }
 
@@ -1276,8 +1276,18 @@ final class NativeExporter {
         send(["event": "export-progress", "job": job, "value": max(0, min(1, value))])
     }
 
+    static func validateOutput(_ url: URL, duration: Double, fps: Int, audio: Bool) throws {
+        let asset = AVURLAsset(url: url)
+        guard asset.tracks(withMediaType: .video).first != nil else { throw ExportError("в готовом файле нет видео") }
+        if audio && asset.tracks(withMediaType: .audio).isEmpty { throw ExportError("в готовом файле нет ожидаемого звука") }
+        let actual = CMTimeGetSeconds(asset.duration)
+        guard actual.isFinite && actual > 0 && abs(actual - duration) <= max(0.08, 2 / Double(fps)) else {
+            throw ExportError("неверная длительность готового видео")
+        }
+    }
+
     private func complete(_ reader: AVAssetReader, _ writer: AVAssetWriter, _ out: URL,
-                          codec: AVVideoCodecType, audio: Bool) {
+                          codec: AVVideoCodecType, audio: Bool, duration: Double) {
         if cancelled {
             writer.cancelWriting()
             try? FileManager.default.removeItem(at: out)
@@ -1298,6 +1308,10 @@ final class NativeExporter {
                 self.fail(writer.error ?? ExportError("файл не записался"))
                 return
             }
+            self.phase = "result-validation"
+            do { try NativeExporter.validateOutput(out, duration: duration, fps: self.plan.fps, audio: audio) }
+            catch { self.fail(error); return }
+            if self.cancelled { self.finishCancelled(); return }
             let attrs = try? FileManager.default.attributesOfItem(atPath: out.path)
             let bytes = (attrs?[.size] as? NSNumber)?.intValue ?? 0
             var info: [String: Any] = [

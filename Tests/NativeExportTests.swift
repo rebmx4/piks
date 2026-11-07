@@ -4,6 +4,16 @@ import CoreVideo
 import CoreImage
 
 final class NativeExportTests: XCTestCase {
+    func testIncompleteOutputCannotBeReportedAsReady() throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "export-red", withExtension: "mp4", subdirectory: "Fixtures"))
+        XCTAssertNoThrow(try NativeExporter.validateOutput(url, duration: 3, fps: 30, audio: true))
+        XCTAssertThrowsError(try NativeExporter.validateOutput(url, duration: 69, fps: 30, audio: true))
+        let empty = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mp4")
+        try Data().write(to: empty)
+        defer { try? FileManager.default.removeItem(at: empty) }
+        XCTAssertThrowsError(try NativeExporter.validateOutput(empty, duration: 3, fps: 30, audio: true))
+    }
+
     func testTwoRealVideoSourcesExportBothLayersFromTheFirstFrame() async throws {
         try await verifyLayers()
     }
