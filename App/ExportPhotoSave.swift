@@ -14,7 +14,9 @@ struct ExportPhotoRequest {
     static func allows(_ origin: URL?, mainFrame: Bool) -> Bool {
         guard mainFrame, let origin=origin, origin.scheme=="https", origin.host=="rynpro.ru",
               origin.port == nil || origin.port == 443 else { return false }
-        return origin.path.hasPrefix("/ryn/") || origin.path.hasPrefix("/ryn-next/")
+        return ["/ryn", "/ryn-next"].contains { root in
+            origin.path == root || origin.path.hasPrefix(root+"/")
+        }
     }
 }
 
