@@ -53,8 +53,6 @@ import Photos
 
 struct ExportPlan {
     struct Item {
-        var leadingFrame: CVPixelBuffer? = nil
-        var leadingUntil: Double = 0
         let media: String
         let at: Double
         let from: Double
@@ -273,6 +271,8 @@ struct ExportError: LocalizedError {
 
 final class RenderScene {
     struct Item {
+        var leadingFrame: CVPixelBuffer? = nil
+        var leadingUntil: Double = 0
         let trackID: CMPersistentTrackID    // у фото — kCMPersistentTrackID_Invalid
         let still: CIImage?                 // фото: кадр стоя, y вверх, от (0, 0)
         var at: Double
