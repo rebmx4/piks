@@ -67,8 +67,10 @@ final class NativeExportTests: XCTestCase {
                        ["media": "m2", "at": overlayAt, "from": overlayAt, "dur": 2 - overlayAt, "volume": 0.5]]]))
         let done = expectation(description: "two real layers exported")
         var result: URL?, failure: [String: Any]?
+        var posters: [String] = []
         let engine = NativeExporter(job: UUID().uuidString, plan: plan, send: { event in
             if event["event"] as? String == "export-error" { failure = event }
+            if event["event"] as? String == "export-poster", let png = event["png"] as? String { posters.append(png) }
         }, resolve: { id, callback in callback(id == "red" ? main : overlay) })
         engine.onFinish = { result = $0; done.fulfill() }
         engine.start()
@@ -78,6 +80,11 @@ final class NativeExportTests: XCTestCase {
         XCTAssertNil(failure, String(describing: failure))
         let url = try XCTUnwrap(result, String(describing: failure))
         defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertEqual(posters.count, 1, "export must send only its first composited frame")
+        let posterData = try XCTUnwrap(posters.first.flatMap { Data(base64Encoded: $0) })
+        let poster = try XCTUnwrap(CIImage(data: posterData))
+        XCTAssertEqual(poster.extent.width, 64)
+        XCTAssertEqual(poster.extent.height, 96)
         let asset = AVURLAsset(url: url)
         let video = try XCTUnwrap(asset.tracks(withMediaType: .video).first)
         let audio = try XCTUnwrap(asset.tracks(withMediaType: .audio).first)
