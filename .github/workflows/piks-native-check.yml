@@ -98,6 +98,19 @@ jobs:
             }
           tail -n 14 build/ci/export-tests.log
 
+      - name: Test reversal on the Mac media stack
+        run: |
+          set -euo pipefail
+          xcodebuild test -project Piks.xcodeproj -scheme ReverseMacTests \
+            -destination 'platform=macOS' -parallel-testing-enabled NO \
+            -derivedDataPath build/ci/reverse-mac-derived \
+            -resultBundlePath build/ci/reverse-mac.xcresult CODE_SIGNING_ALLOWED=NO \
+            > build/ci/reverse-mac-tests.log 2>&1 || {
+              tail -n 130 build/ci/reverse-mac-tests.log
+              exit 1
+            }
+          tail -n 16 build/ci/reverse-mac-tests.log
+
       - name: Run reversal tests
         run: |
           set -euo pipefail
