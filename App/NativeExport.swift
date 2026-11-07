@@ -1287,7 +1287,7 @@ final class NativeExporter {
         let scale=min(1,640/max(image.extent.width,image.extent.height))
         let thumbnail=image.transformed(by:CGAffineTransform(scaleX:scale,y:scale))
         guard let color=CGColorSpace(name:CGColorSpace.sRGB),
-              let png=RenderScene.context.pngRepresentation(of:thumbnail,format:.RGBA8,colorSpace:color) else { return }
+              let png=RyndiCompositor.context.pngRepresentation(of:thumbnail,format:.RGBA8,colorSpace:color) else { return }
         send(["event":"export-poster","job":job,"png":png.base64EncodedString()])
     }
 
