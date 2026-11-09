@@ -75,25 +75,33 @@ final class PreviewCutPlaybackTests: XCTestCase {
             XCTAssertTrue(seeked, label + " seek must finish")
             player.playImmediately(atRate: 1)
             let until = Date().addingTimeInterval(seconds + 3)
-            var frames: [Double] = [], lastWall = Date(), maxGap = 0.0
+            let asked = Date()
+            var frames: [Double] = [], lastWall: Date?, maxGap = 0.0, firstMs = -1.0, stale = 0
             while Date() < until && item.status != .failed {
                 let position = player.currentTime()
                 var displayed = CMTime.invalid
                 if output.hasNewPixelBuffer(forItemTime: position),
                    output.copyPixelBuffer(forItemTime: position, itemTimeForDisplay: &displayed) != nil,
                    displayed.isNumeric {
-                    frames.append(displayed.seconds)
-                    maxGap = max(maxGap, Date().timeIntervalSince(lastWall))
-                    lastWall = Date()
+                    // VideoOutput may still return a buffered image from before
+                    // seek. It is not evidence of a frame at the requested time.
+                    if displayed.seconds >= start - 1.0 / 30 && displayed.seconds <= position.seconds + 0.1 {
+                        frames.append(displayed.seconds)
+                        if let previous = lastWall { maxGap = max(maxGap, Date().timeIntervalSince(previous)) }
+                        else { firstMs = Date().timeIntervalSince(asked) * 1000 }
+                        lastWall = Date()
+                    } else { stale += 1 }
                 }
                 if position.isNumeric && position.seconds >= start + seconds { break }
                 try await Task.sleep(nanoseconds: 20_000_000)
             }
             let end = player.currentTime().seconds
-            print("CUT-PREVIEW \(label) start=\(start) clock=\(end) frames=\(frames.count) first=\(frames.first ?? -1) last=\(frames.last ?? -1) maxGap=\(maxGap)")
+            print("CUT-PREVIEW \(label) start=\(start) clock=\(end) frames=\(frames.count) first=\(frames.first ?? -1) last=\(frames.last ?? -1) startupMs=\(firstMs) stale=\(stale) maxGap=\(maxGap)")
             XCTAssertNotEqual(item.status, .failed, String(describing: item.error))
             XCTAssertGreaterThan(end, start + seconds - 0.15, label + " clock")
             XCTAssertGreaterThan(frames.count, 8, label + " must produce changing video samples")
+            XCTAssertGreaterThanOrEqual(firstMs, 0, label + " must return a frame at the requested source time")
+            XCTAssertLessThan(firstMs, 5000, label + " must meet the shipped startup deadline")
             XCTAssertTrue(frames.contains { $0 > start + seconds - 0.25 }, label + " final frame must catch the clock")
             XCTAssertLessThan(maxGap, 1.5, label + " cannot hold a frame for seconds")
         }
@@ -105,8 +113,9 @@ final class PreviewCutPlaybackTests: XCTestCase {
         let sourceTrack = try XCTUnwrap(AVURLAsset(url: original).tracks(withMediaType: .video).first)
         XCTAssertEqual(sourceTrack.naturalSize, CGSize(width: 3840, height: 2160))
         try await verify(original, cut: false, label: "original-uncut")
-        try await verify(original, cut: true, label: "original-cut")
-        let copy = try await proxy(original)
+        async let pendingCopy = proxy(original)
+        try await verify(original, cut: true, label: "original-cut-during-proxy")
+        let copy = try await pendingCopy
         defer { try? FileManager.default.removeItem(at: copy) }
         try await verify(copy, cut: true, label: "proxy-cut")
     }
