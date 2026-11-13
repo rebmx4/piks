@@ -7,19 +7,24 @@ final class MediaDocumentAccess {
     static let hosts: Set<String> = ["orig", "proxy", "file", "photo", "live", "preview", "audio", "thumb"]
     private let lock = NSLock()
     private var counter = 0
+    private var expected: String
+    init(token: String = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()) { expected = token }
     var generation: Int { lock.lock(); defer { lock.unlock() }; return counter }
+    var bootstrapToken: String { lock.lock(); defer { lock.unlock() }; return expected }
     private var token: String?
     private var site: EditorTrustPolicy.Site?
 
     func revoke() {
         lock.lock(); defer { lock.unlock() }
         counter += 1; token = nil; site = nil
+        expected = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
     }
 
     @discardableResult func bind(_ token: String, document: URL?, mainFrame: Bool) -> Bool {
         lock.lock(); defer { lock.unlock() }
         guard let site = EditorTrustPolicy.site(document, mainFrame: mainFrame),
               token.count == 32, token.allSatisfy({ $0.isASCII && $0.isHexDigit }),
+              token == expected,
               self.token == nil || self.token == token else { return false }
         self.token = token; self.site = site
         return true

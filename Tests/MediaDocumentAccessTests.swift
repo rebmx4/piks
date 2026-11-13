@@ -10,21 +10,22 @@ final class MediaDocumentAccessTests: XCTestCase {
     }
 
     func testGrantIsRequiredAndRevokedAcrossDocuments() {
-        let access = MediaDocumentAccess(), url = request(token: token)
+        let access = MediaDocumentAccess(token: token), url = request(token: token)
         XCTAssertFalse(access.allows(url, method: "GET", origin: nil, document: document))
         XCTAssertTrue(access.bind(token, document: document, mainFrame: true))
         XCTAssertTrue(access.allows(url, method: "GET", origin: nil, document: document))
         XCTAssertTrue(access.allows(url, method: "HEAD", origin: "https://rynpro.ru", document: document))
         access.revoke()
+        XCTAssertFalse(access.bind(token, document: document, mainFrame: true), "a queued bootstrap from the old document cannot bind again")
         XCTAssertFalse(access.allows(url, method: "GET", origin: nil, document: document))
-        let next = String(repeating: "b", count: 32)
+        let next = access.bootstrapToken
         XCTAssertTrue(access.bind(next, document: document, mainFrame: true))
         XCTAssertFalse(access.allows(url, method: "GET", origin: nil, document: document))
         XCTAssertTrue(access.allows(request(token: next), method: "GET", origin: nil, document: document))
     }
 
     func testUnknownHostsDirectReadsAndOtherOriginsAreDenied() {
-        let access = MediaDocumentAccess()
+        let access = MediaDocumentAccess(token: token)
         XCTAssertFalse(access.bind(token, document: document, mainFrame: false))
         XCTAssertFalse(access.bind(token, document: URL(string: "https://rynpro.ru/other/"), mainFrame: true))
         XCTAssertTrue(access.bind(token, document: document, mainFrame: true))

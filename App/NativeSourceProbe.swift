@@ -13,7 +13,10 @@ enum NativeSourceProbe {
             guard let track = asset.tracks(withMediaType: .video).first else {
                 throw NSError(domain: "apiks.source", code: 1)
             }
-            result["width"] = Int(abs(track.naturalSize.width)); result["height"] = Int(abs(track.naturalSize.height))
+            func dimension(_ value: CGFloat) -> Int {
+                value.isFinite && abs(value) <= 65536 ? Int(abs(value)) : 0
+            }
+            result["width"] = dimension(track.naturalSize.width); result["height"] = dimension(track.naturalSize.height)
             if let first = track.formatDescriptions.first {
                 let format = first as! CMFormatDescription
                 let value = CMFormatDescriptionGetMediaSubType(format)

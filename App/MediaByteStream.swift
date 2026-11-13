@@ -8,7 +8,7 @@ final class MediaByteStream {
     private let file: URL
     private let response: MediaHTTPResponse
     private let deliveryQueue: DispatchQueue
-    private let io = DispatchQueue(label: "apiks.media.stream", qos: .userInitiated)
+    private let io = DispatchQueue(label: "apiks.media.stream", qos: .userInitiated, autoreleaseFrequency: .workItem)
     private let lock = NSLock()
     private var active = true
     private var started = false

@@ -30,7 +30,7 @@ final class MediaSchemeHandlerTests: XCTestCase {
         let bytes = Data(repeating: 7, count: 9 * 1024 * 1024 + 13)
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mp4")
         try bytes.write(to: url); defer { try? FileManager.default.removeItem(at: url) }
-        let access = MediaDocumentAccess(); access.bind(token, document: document, mainFrame: true)
+        let access = MediaDocumentAccess(token: token); access.bind(token, document: document, mainFrame: true)
         let handler = MediaSchemeHandler(access: access, document: { self.document }, resolve: { _, done in
             done(.file(url, "video/mp4")); return {}
         })
@@ -48,7 +48,7 @@ final class MediaSchemeHandlerTests: XCTestCase {
     }
 
     func testUngrantedTaskAndCancelledResolverCannotReadFiles() {
-        let access = MediaDocumentAccess(); access.bind(token, document: document, mainFrame: true)
+        let access = MediaDocumentAccess(token: token); access.bind(token, document: document, mainFrame: true)
         var resolutions = 0, cancelled = 0
         var reply: ((MediaSchemeResource?) -> Void)?
         let handler = MediaSchemeHandler(access: access, document: { self.document }, resolve: { _, done in
@@ -66,7 +66,7 @@ final class MediaSchemeHandlerTests: XCTestCase {
     }
 
     func testResolverConcurrencyIsBoundedAndPendingTasksAreCancelled() {
-        let access = MediaDocumentAccess(); access.bind(token, document: document, mainFrame: true)
+        let access = MediaDocumentAccess(token: token); access.bind(token, document: document, mainFrame: true)
         var started = 0, cancelled = 0
         let handler = MediaSchemeHandler(access: access, document: { self.document }, resolve: { _, _ in
             started += 1; return { cancelled += 1 }

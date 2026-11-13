@@ -3,11 +3,16 @@ import Foundation
 // Scope legacy editor URLs at their DOM/network boundary. Project documents
 // keep the original stable URLs, including on older /ryn/ web versions.
 enum MediaDocumentScript {
-    static let source = #"""
+    static let marker = "// APIKS document media scope\n"
+    static func source(token: String) -> String {
+        precondition(token.count == 32 && token.allSatisfy({ $0.isASCII && $0.isHexDigit }))
+        return marker + template.replacingOccurrences(of: "__APIKS_DOCUMENT_TOKEN__", with: token)
+    }
+    private static let template = #"""
     (() => {
       'use strict';
-      if (window !== window.top || !window.crypto?.getRandomValues) return;
-      const token = Array.from(crypto.getRandomValues(new Uint8Array(16)), x => x.toString(16).padStart(2, '0')).join('');
+      if (window !== window.top) return;
+      let token = '__APIKS_DOCUMENT_TOKEN__';
       const key = '__apiks_doc';
       function rewrite(raw, scoped) {
         if (typeof raw !== 'string' || !raw.startsWith('ryndi-media:')) return raw;
@@ -29,8 +34,9 @@ enum MediaDocumentScript {
       for (const type of [HTMLMediaElement, HTMLImageElement]) property(type, 'currentSrc', false);
       const set = Element.prototype.setAttribute, get = Element.prototype.getAttribute;
       const isSource = name => /^(src|poster)$/i.test(name);
+      const isMedia = element => /^(IMG|VIDEO|AUDIO|SOURCE|TRACK)$/.test(element.tagName);
       Element.prototype.setAttribute = function(name, value) {
-        return set.call(this, name, isSource(name) ? rewrite(String(value), true) : value);
+        return set.call(this, name, isMedia(this) && isSource(name) ? rewrite(String(value), true) : value);
       };
       Element.prototype.getAttribute = function(name) {
         const value = get.call(this, name); return isSource(name) ? rewrite(value, false) : value;
@@ -44,7 +50,7 @@ enum MediaDocumentScript {
       const open = XMLHttpRequest.prototype.open;
       XMLHttpRequest.prototype.open = function(method, url, ...rest) { return open.call(this, method, rewrite(String(url), true), ...rest); };
       const scopeElement = element => {
-        if (!(element instanceof Element)) return;
+        if (!(element instanceof Element) || !isMedia(element)) return;
         for (const name of ['src', 'poster']) {
           const value = get.call(element, name), next = rewrite(value, true);
           if (next !== value) set.call(element, name, next);
@@ -59,7 +65,14 @@ enum MediaDocumentScript {
           }
         }
       }).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['src', 'poster'] });
-      window.webkit.messageHandlers.ryndi.postMessage({cmd: 'document-ready', token});
+      const bind = () => window.webkit.messageHandlers.ryndi.postMessage({cmd: 'document-ready', token});
+      Object.defineProperty(window, '__apiksMediaDocument', { value(next) {
+        if (!/^[a-f0-9]{32}$/.test(next)) return;
+        const changed = next !== token; token = next;
+        bind();
+        if (changed) document.querySelectorAll('[src],[poster]').forEach(scopeElement);
+      } });
+      bind();
     })();
     """#
 }

@@ -13,6 +13,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
     private var recovery = WebContentRecovery()
     private var recoveredExport: String?
     private var exportRecoveryPresenter: ExportRecoveryPresenter?
+    private var mediaNavigationPrepared = false
     private let refreshControl = UIRefreshControl()
     private var wrapperInputMode = WrapperInputMode.load(comparisonAvailable: canChooseSite)
     private var wrapperInputBaseline: WrapperInputBaseline!
@@ -71,6 +72,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
 
     private func setupWebView() {
         let config = WKWebViewConfiguration()
+        mediaBridge = MediaBridge(host: self)
         let ucc = WKUserContentController()
         let appLanguage = Bundle.main.preferredLocalizations.first == "ru" ? "ru" : "en"
         ucc.addUserScript(WKUserScript(
@@ -82,7 +84,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
             source: MediaBridge.capsScript,
             injectionTime: .atDocumentStart,
             forMainFrameOnly: true))
-        ucc.addUserScript(WKUserScript(source: MediaDocumentScript.source,
+        ucc.addUserScript(WKUserScript(source: MediaDocumentScript.source(token: mediaBridge.mediaAccess.bootstrapToken),
             injectionTime: .atDocumentStart, forMainFrameOnly: true))
         ucc.add(self, name: "nativeShare")
         ucc.add(self, name: MediaBridge.handlerName)
@@ -96,7 +98,6 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
         // Мост к галерее: облегчённая копия ролика вместо копирования 4 ГБ
         // в песочницу страницы. Обработчик схемы надо поставить ДО создания
         // webView — на готовую конфигурацию он уже не встанет.
-        mediaBridge = MediaBridge(host: self)
         config.setURLSchemeHandler(mediaBridge, forURLScheme: MediaBridge.scheme)
 
         webView = WKWebView(frame: .zero, configuration: config)
@@ -334,13 +335,34 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
 
     // MARK: - WKNavigationDelegate
 
-    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-        mediaBridge.documentWillChange()
+    private func refreshMediaDocumentScript() {
+        let controller = webView.configuration.userContentController
+        let others = controller.userScripts.filter { !$0.source.hasPrefix(MediaDocumentScript.marker) }
+        controller.removeAllUserScripts()
+        for script in others { controller.addUserScript(script) }
+        controller.addUserScript(WKUserScript(source: MediaDocumentScript.source(token: mediaBridge.mediaAccess.bootstrapToken),
+            injectionTime: .atDocumentStart, forMainFrameOnly: true))
     }
+
+    // A restored back/forward-cache document keeps its JS realm. Rebind that
+    // realm from native after commit, with a newly issued native-owned grant.
+    private func updateMediaDocumentGrant() {
+        guard EditorTrustPolicy.allows(webView.url, mainFrame: true) else { return }
+        let token = mediaBridge.mediaAccess.bootstrapToken
+        webView.evaluateJavaScript("window.__apiksMediaDocument && window.__apiksMediaDocument('\(token)');", completionHandler: nil)
+    }
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        if !mediaNavigationPrepared { mediaBridge.documentWillChange(); refreshMediaDocumentScript() }
+        mediaNavigationPrepared = false
+    }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) { updateMediaDocumentGrant() }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         refreshControl.endRefreshing()
         offlineView.isHidden = true
+        updateMediaDocumentGrant()
         let wasRecovering = recovery.recovering
         recovery.loaded()
         if wasRecovering {
@@ -392,6 +414,16 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
             UIApplication.shared.open(url); decisionHandler(.cancel); return
         }
         if let host = url.host, allowedOrigins.contains(where: { host == $0 || host.hasSuffix("." + $0) }) {
+            if navigationAction.targetFrame?.isMainFrame == true {
+                var from = webView.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }
+                var to = URLComponents(url: url, resolvingAgainstBaseURL: false)
+                let changedFragment = from?.fragment != to?.fragment
+                from?.fragment = nil; to?.fragment = nil
+                let anchor = changedFragment && from == to && navigationAction.navigationType != .reload
+                if !anchor {
+                    mediaBridge.documentWillChange(); refreshMediaDocumentScript(); mediaNavigationPrepared = true
+                }
+            }
             decisionHandler(.allow); return
         }
         if scheme == "http" || scheme == "https" {

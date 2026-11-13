@@ -94,6 +94,7 @@ final class MediaSchemeHandler: NSObject, WKURLSchemeHandler {
                     guard self.headers(request, status: response.status, headers: response.headers, type: type) else {
                         self.remove(key); return
                     }
+                    guard self.live(key, request) else { return }
                     let stream = MediaByteStream(file: file, response: response, receive: { [weak self, weak request] data in
                         guard let self = self, let request = request, self.live(key, request) else { return }
                         request.task.didReceive(data)
@@ -149,8 +150,11 @@ final class MediaSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     private func immediate(_ task: WKURLSchemeTask, status: Int) {
+        let key = ObjectIdentifier(task)
         let request = Request(task, generation: access.generation)
-        if headers(request, status: status, headers: ["Content-Length": "0"]) { task.didFinish() }
+        requests[key] = request
+        if headers(request, status: status, headers: ["Content-Length": "0"]), live(key, request) { task.didFinish() }
+        remove(key)
     }
 
     private func remove(_ key: ObjectIdentifier) {
