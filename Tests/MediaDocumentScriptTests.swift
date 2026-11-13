@@ -33,15 +33,21 @@ final class MediaDocumentScriptTests: XCTestCase {
             } else if body["cmd"] as? String == "loaded" {
                 XCTAssertEqual(body["src"] as? String, "ryndi-media://orig/image.png")
                 XCTAssertEqual(body["attribute"] as? String, "ryndi-media://orig/image.png")
+                XCTAssertEqual(body["canvas"] as? Bool, true, "the new CORS policy must keep canvas/WebGL input readable")
                 loaded.fulfill()
             } else if body["cmd"] as? String == "frame" {
                 XCTAssertEqual(body["src"] as? String, "ryndi-media://orig/blocked.png"); frame.fulfill()
             } else if body["cmd"] as? String == "failed" { XCTFail("scoped image did not load"); loaded.fulfill() }
         }
-        web.loadHTMLString("""
+        web.loadSimulatedRequest(URLRequest(url: document), responseHTML: """
         <script>
-        const image = new Image();
-        image.onload = () => window.webkit.messageHandlers.ryndi.postMessage({cmd:'loaded', src:image.src, attribute:image.getAttribute('src')});
+        const image = new Image(); image.crossOrigin = 'anonymous';
+        image.onload = () => {
+          const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
+          let readable = false;
+          try { const ctx = canvas.getContext('2d'); ctx.drawImage(image,0,0); ctx.getImageData(0,0,1,1); readable = true; } catch {}
+          window.webkit.messageHandlers.ryndi.postMessage({cmd:'loaded', src:image.src, attribute:image.getAttribute('src'), canvas:readable});
+        };
         image.onerror = () => window.webkit.messageHandlers.ryndi.postMessage({cmd:'failed'});
         image.src = 'ryndi-media://orig/image.png'; document.documentElement.appendChild(image);
         const frame = document.createElement('iframe');
@@ -50,7 +56,7 @@ final class MediaDocumentScriptTests: XCTestCase {
         // DOM mutation checkpoint instead; an accidentally scoped URL fails.
         queueMicrotask(() => window.webkit.messageHandlers.ryndi.postMessage({cmd:'frame', src:frame.src}));
         </script>
-        """, baseURL: document)
+        """)
         wait(for: [ready, loaded, frame], timeout: 20)
         XCTAssertEqual(resolutions, 1)
         let old = access.bootstrapToken
@@ -62,7 +68,9 @@ final class MediaDocumentScriptTests: XCTestCase {
             if body["cmd"] as? String == "document-ready" {
                 XCTAssertTrue(access.bind(body["token"] as? String ?? "", document: message.frameInfo.request.url,
                     mainFrame: message.frameInfo.isMainFrame)); rebound.fulfill()
-            } else if body["cmd"] as? String == "loaded" { reloaded.fulfill() }
+            } else if body["cmd"] as? String == "loaded" {
+                XCTAssertEqual(body["canvas"] as? Bool, true); reloaded.fulfill()
+            }
             else if body["cmd"] as? String == "failed" { XCTFail("rebound image did not load"); reloaded.fulfill() }
         }
         web.evaluateJavaScript("window.__apiksMediaDocument('\(access.bootstrapToken)');", completionHandler: nil)
