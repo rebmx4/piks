@@ -1,0 +1,74 @@
+name: APIKS codec and skin compatibility probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/native-release-20261113
+    paths:
+      - .github/workflows/piks-native-probe.yml
+      - Scripts/fetch-probe-inputs.py
+      - Tests/CodecSkinProbeTests.swift
+      - Tests/ProbeInputs/**
+      - project.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: macos-26
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Fetch pinned public probe inputs
+        run: python3 Scripts/fetch-probe-inputs.py Tests/ProbeInputs
+      - name: Generate project and select Simulator
+        run: |
+          set -euo pipefail
+          mkdir -p build/probe
+          if ! command -v xcodegen >/dev/null; then brew install xcodegen; fi
+          xcodegen generate
+          xcrun simctl list devices available -j > build/probe/devices.json
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          runtimes=json.loads(Path('build/probe/devices.json').read_text())['devices']
+          devices=[(runtime,d['udid']) for runtime,ds in runtimes.items() if 'iOS-' in runtime
+                   for d in ds if d['name'].startswith('iPhone')]
+          with open(os.environ['GITHUB_ENV'],'a') as out:
+              out.write('PROBE_SIM='+max(devices)[1]+'\n')
+          PY
+      - name: Build native dependency for physical iPhone
+        run: |
+          set -euo pipefail
+          xcodebuild build-for-testing -project Piks.xcodeproj -scheme CodecSkinProbeTests \
+            -destination 'generic/platform=iOS' -derivedDataPath build/probe/device \
+            CODE_SIGNING_ALLOWED=NO > build/probe/device.log 2>&1 || {
+              tail -n 90 build/probe/device.log; exit 1;
+            }
+      - name: Run actual decoder and native model
+        run: |
+          set -euo pipefail
+          xcodebuild test -project Piks.xcodeproj -scheme CodecSkinProbeTests \
+            -destination "platform=iOS Simulator,id=$PROBE_SIM" \
+            -parallel-testing-enabled NO -derivedDataPath build/probe/simulator \
+            -resultBundlePath build/probe/compatibility.xcresult CODE_SIGNING_ALLOWED=NO \
+            > build/probe/tests.log 2>&1 || {
+              tail -n 100 build/probe/tests.log; exit 1;
+            }
+          tail -n 24 build/probe/tests.log
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: codec-skin-probe-${{ github.run_id }}
+          path: |
+            build/probe/*.log
+            build/probe/*.xcresult/**
+          retention-days: 3

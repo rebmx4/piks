@@ -14,7 +14,28 @@ settings:
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_LANGUAGE: en
 
+packages:
+  MediaPipeTasks:
+    url: https://github.com/google-ai-edge/mediapipe
+    revision: 1b9800ed7baddd397b888eaaaf0c841fe0358241
+
 targets:
+  CodecSkinProbeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests/CodecSkinProbeTests.swift
+      - path: Tests/ProbeInputs
+        type: folder
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.piks.codec.skin.probe
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+    dependencies:
+      - package: MediaPipeTasks
+        product: MediaPipeTasksVision
+
   App:
     type: application
     platform: iOS
@@ -157,6 +178,14 @@ targets:
         CODE_SIGNING_ALLOWED: NO
 
 schemes:
+  CodecSkinProbeTests:
+    build:
+      targets:
+        CodecSkinProbeTests: all
+    test:
+      targets:
+        - CodecSkinProbeTests
+
   MediaRequestTests:
     build:
       targets:
