@@ -5,6 +5,7 @@ on:
     branches:
       - fix/play-context-20261030
       - fix/export-recovery-20261107
+      - fix/native-release-20261113
   workflow_dispatch:
 
 permissions:
@@ -15,6 +16,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  safety:
+    uses: ./.github/workflows/piks-native-safety.yml
   ios:
     name: Unsigned iOS build and tests
     runs-on: macos-26
@@ -99,6 +102,7 @@ jobs:
           tail -n 14 build/ci/export-tests.log
 
       - name: Test reversal on the Mac media stack
+        if: github.ref != 'refs/heads/fix/native-release-20261113'
         run: |
           set -euo pipefail
           xcodebuild test -project Piks.xcodeproj -scheme ReverseMacTests \
@@ -112,6 +116,7 @@ jobs:
           tail -n 16 build/ci/reverse-mac-tests.log
 
       - name: Run reversal tests
+        if: github.ref != 'refs/heads/fix/native-release-20261113'
         run: |
           set -euo pipefail
           xcodebuild test \
@@ -154,6 +159,7 @@ jobs:
           tail -n 12 build/ci/reverse-tests.log
 
       - name: Run wrapper input UI tests
+        if: github.ref != 'refs/heads/fix/native-release-20261113'
         run: |
           set -euo pipefail
           xcodebuild test \

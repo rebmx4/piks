@@ -736,6 +736,8 @@ final class NativeExporter {
 
     // Вызывается на главной очереди, когда экспорт закончился (файл или nil).
     var onFinish: ((URL?) -> Void)?
+    var onFileReady: ((URL) -> Void)?
+    var saveResult: ((URL, @escaping (Bool, String?) -> Void) -> Void)?
 
     // Время с точностью до миллисекунды и до кадра при 24, 25, 30, 50 и 60.
     private static let scale: CMTimeScale = 30000
@@ -1335,12 +1337,14 @@ final class NativeExporter {
                 "width": self.plan.width, "height": self.plan.height, "fps": self.plan.fps,
                 "codec": codec == .hevc ? "hevc" : "avc", "audio": audio,
             ]
+            self.onFileReady?(out)
             guard self.plan.save else {
                 info["saved"] = false
                 self.end(info, file: out)
                 return
             }
-            NativeExporter.saveToPhotos(out) { ok, why in
+            let save = self.saveResult ?? NativeExporter.saveToPhotos
+            save(out) { ok, why in
                 info["saved"] = ok
                 if let why = why { info["saveError"] = why }
                 self.end(info, file: out)

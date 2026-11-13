@@ -35,16 +35,13 @@ final class MediaBridge: NSObject {
     private var files: [String: URL] = [:]          // id -> файл ролика (оригинал или копия)
     let videoRequests = MediaRequests<URL>()
     var galleryRequests: [String: [() -> Void]] = [:]
-    var schemeRequests: [ObjectIdentifier: () -> Void] = [:]
-    var mediaSequence = 0
     var diagnosedMedia = Set<String>()
     var audioFiles: [String: URL] = [:]             // id -> звук ролика отдельным m4a (MediaAudio.swift)
-    private var stopped = Set<ObjectIdentifier>()   // задачи, которые WebKit отменил
     private var export: AVAssetExportSession?
     private var progressTimer: Timer?
     private var exporter: NativeExporter?           // идущий нативный экспорт
     private var lastExport: URL?                    // последний готовый файл — для «Поделиться»
-    let exportPhotos = ExportPhotoSave()
+    let exportOperations = ExportOperationStore()
     let previews = PreviewCopies()                  // копии роликов для просмотра (сборка №18, MediaPreview.swift)
     var playback: NativePlayback?                   // нативное превью (сборка №23, NativePlayback.swift)
     let diagnostics: MediaDiagnostics? = canChooseSite
@@ -82,7 +79,7 @@ final class MediaBridge: NSObject {
         var caps = ["pick", "export", "photos", "share", "wave", "audio", "ramps", "read", "adjust", "gallery",
                     "speed", "crop", "mask", "overlap", "cifilter", "stills", "files", "photo", "live", "haptic",
                     "mic", "vision", "preview", "stereo", "inbox", "keep", "cache", "play", "reverse", "reverse-proxy", "mediaRead",
-                    "exportPresentation", "play-context", "exportPhotosV1", "exportPosterV1"]
+                    "exportPresentation", "play-context", "exportPhotosV1", "exportPosterV1", "exportRecoveryV1"]
         if canChooseSite { caps.insert("site", at: 4) }
         if canChooseSite { caps.append("media-diagnostics") }
         if #available(iOS 17.0, *) { caps.append("subject") }
@@ -120,12 +117,9 @@ final class MediaBridge: NSObject {
     func proxyFile(_ id: String) -> URL? { files[id] }
     func rememberFile(_ id: String, _ url: URL) { files[id] = url }
     func forgetFile(_ id: String) { files[id] = nil }
-    func markStopped(_ key: ObjectIdentifier) { stopped.insert(key) }
     // Идёт экспорт телефоном — копии для просмотра ждут (MediaPreview.swift):
     // кодировщик у них общий.
     var exportRunning: Bool { exporter != nil || export != nil || reverser != nil }
-    func unmarkStopped(_ key: ObjectIdentifier) { stopped.remove(key) }
-    func isStopped(_ key: ObjectIdentifier) -> Bool { stopped.contains(key) }
 
     // MARK: - Команды со страницы
 
@@ -141,13 +135,19 @@ final class MediaBridge: NSObject {
         switch body["cmd"] as? String {
         case "document-ready":
             if let token = body["token"] as? String {
-                mediaAccess.bind(token, document: message.frameInfo.request.url, mainFrame: message.frameInfo.isMainFrame)
+                if mediaAccess.bind(token, document: message.frameInfo.request.url, mainFrame: message.frameInfo.isMainFrame) {
+                    let generation = mediaAccess.generation
+                    playback?.send = { [weak self] value in self?.send(value, generation: generation) }
+                }
             }
         case "ping":          send(["event": "ready"])
         case "pick":          pickVideo()
         case "proxy":         makeProxyOnDemand(body["id"] as? String)
         case "export":        startExport(body["plan"] as? String, job: body["job"] as? String)
         case "export-cancel": exporter?.cancel()
+        case "export-status":
+            send(["event": "export-status", "req": body["req"] as? String ?? "",
+                  "operation": exportOperations.status(body["token"] as? String)?.payload ?? [:]])
         case "export-share":  shareExport()
         case "export-save-file":
             saveExportFile(body, allowed: ExportPhotoRequest.allows(message.frameInfo.request.url,
@@ -203,12 +203,27 @@ final class MediaBridge: NSObject {
             send(["event": "export-error", "job": job, "reason": "план экспорта не прочитался"])
             return
         }
+        guard exportOperations.beginExport(job) else {
+            send(["event": "export-error", "job": job, "reason": "неверный или повторный номер экспорта"]); return
+        }
+        let generation = mediaAccess.generation
         let ex = NativeExporter(job: job, plan: plan,
-            send: { [weak self] event in self?.send(event) },
+            send: { [weak self] event in
+                if event["event"] as? String == "export-error" || event["event"] as? String == "export-cancelled" {
+                    self?.exportOperations.failed(job, reason: event["reason"] as? String ?? "экспорт отменён",
+                        cancelled: event["event"] as? String == "export-cancelled")
+                }
+                self?.send(event, generation: generation)
+            },
             resolve: { [weak self] id, done in
                 guard let self = self else { done(nil); return }
                 self.resolveFile(id, done: done)
             })
+        ex.onFileReady = { [weak self] file in self?.exportOperations.fileReady(job, file: file) }
+        ex.saveResult = { [weak self] file, done in
+            guard let self = self else { done(false, "редактор закрыт"); return }
+            self.exportOperations.save(job, file: file, write: NativeExporter.saveToPhotos, done: done)
+        }
         ex.onFinish = { [weak self] file in
             guard let self = self else { return }
             if let file = file {
@@ -316,13 +331,26 @@ final class MediaBridge: NSObject {
         makeProxy(for: assetId)
     }
 
-    func send(_ payload: [String: Any]) {
+    func documentWillChange() {
+        playback?.stop()
+        diagnostics?.stop()
+        mediaAccess.revoke()
+        mediaServer.cancelAll()
+        diagnosedMedia.removeAll()
+    }
+
+    func send(_ payload: [String: Any], generation: Int? = nil) {
         diagnostics?.playback(payload)
         guard let webView = webView,
               let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8) else { return }
         let js = "window.__ryndiNative && window.__ryndiNative(\(json));"
-        DispatchQueue.main.async { webView.evaluateJavaScript(js, completionHandler: nil) }
+        let generation = generation ?? mediaAccess.generation
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.mediaAccess.generation == generation,
+                  EditorTrustPolicy.allows(webView.url, mainFrame: true) else { return }
+            webView.evaluateJavaScript(js, completionHandler: nil)
+        }
     }
 
     private func fail(_ reason: String) {

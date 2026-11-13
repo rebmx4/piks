@@ -9,6 +9,10 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
     private let playback = NativePlayback()          // нативное превью под страницей (сборка №23)
     private var progressView: UIProgressView!
     private var offlineView: UIView!
+    private var offlineLabel: UILabel!
+    private var recovery = WebContentRecovery()
+    private var recoveredExport: String?
+    private var exportRecoveryPresenter: ExportRecoveryPresenter?
     private let refreshControl = UIRefreshControl()
     private var wrapperInputMode = WrapperInputMode.load(comparisonAvailable: canChooseSite)
     private var wrapperInputBaseline: WrapperInputBaseline!
@@ -25,6 +29,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
         setupWebView()
         setupProgress()
         setupOffline()
+        exportRecoveryPresenter = ExportRecoveryPresenter(host: self, store: mediaBridge.exportOperations)
         clearWebCachesThenLoad()
         appUpdatePresenter = AppUpdatePresenter(host: self)
         Task { [weak self] in await self?.appUpdatePresenter?.refresh() }
@@ -238,6 +243,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
             offlineView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
         ])
         let label = UILabel()
+        offlineLabel = label
         label.text = NSLocalizedString("Нет подключения к интернету", comment: "Offline message")
         label.textColor = .lightGray
         label.font = .systemFont(ofSize: 16, weight: .medium)
@@ -301,6 +307,8 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
 
     @objc private func reloadWeb() {
         offlineView.isHidden = true
+        _ = recovery.retry(at: webView.url ?? rootUrl)
+        offlineLabel.text = NSLocalizedString("Нет подключения к интернету", comment: "Offline message")
         if webView.url != nil {
             webView.reloadFromOrigin()
         } else { loadRoot() }
@@ -327,14 +335,32 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
     // MARK: - WKNavigationDelegate
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-        mediaBridge.diagnostics?.stop()
-        mediaBridge.mediaAccess.revoke()
-        mediaBridge.mediaServer.cancelAll()
+        mediaBridge.documentWillChange()
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         refreshControl.endRefreshing()
         offlineView.isHidden = true
+        recovery.loaded()
+        exportRecoveryPresenter?.restore(recoveredExport)
+        recoveredExport = nil
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        mediaBridge.documentWillChange()
+        let operation = mediaBridge.exportOperations.status()
+        recoveredExport = operation.flatMap { value in
+            [.exporting, .saving, .fileReady].contains(value.phase) ? value.token : nil
+        }
+        exportRecoveryPresenter?.restore(recoveredExport)
+        switch recovery.terminated(at: webView.url) {
+        case .reload(let url):
+            webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData))
+        case .showError:
+            refreshControl.endRefreshing()
+            offlineLabel.text = "Редактор остановился. Нажмите «Повторить», чтобы открыть сохранённые проекты."
+            offlineView.isHidden = false
+        }
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {

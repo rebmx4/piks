@@ -164,6 +164,7 @@ targets:
       - path: Tests/NativeExportTests.swift
       - path: Tests/ExportPhotoSaveTests.swift
       - path: App/ExportPhotoSave.swift
+      - path: App/ExportOperationStore.swift
       - path: App/EditorTrustPolicy.swift
       - path: Tests/ExportPresentationTests.swift
       - path: Tests/MonoCompositionTests.swift

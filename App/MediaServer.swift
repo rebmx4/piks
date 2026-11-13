@@ -19,7 +19,16 @@ extension MediaBridge: WKURLSchemeHandler {
             done(audioFiles[id].map { .file($0, "audio/mp4") }); return {}
         default:
             // Host allowlist and the document grant were checked before resolution.
-            return resolveFile(id) { file in done(file.map { .file($0, MediaBridge.mimeType(for: $0)) }) }
+            let diagnose = diagnosedMedia.insert(id).inserted, started = Date(), generation = mediaAccess.generation
+            let request = "stream-" + UUID().uuidString
+            if diagnose { send(["event": "media-diagnostic", "req": request, "phase": "scheme-start"], generation: generation) }
+            return resolveFile(id) { [weak self] file in
+                if diagnose {
+                    self?.send(["event": "media-diagnostic", "req": request, "phase": file == nil ? "scheme-missing" : "scheme-file",
+                                "ms": Int(Date().timeIntervalSince(started) * 1000)], generation: generation)
+                }
+                done(file.map { .file($0, MediaBridge.mimeType(for: $0)) })
+            }
         }
     }
 }
