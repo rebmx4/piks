@@ -1,0 +1,53 @@
+name: APIKS native component checks
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/native-release-20261113]
+    paths:
+      - App/EditorTrustPolicy.swift
+      - App/MediaHTTPResponse.swift
+      - App/MediaByteStream.swift
+      - App/MediaDocumentAccess.swift
+      - App/WebContentRecovery.swift
+      - App/ExportOperationStore.swift
+      - Tests/NativeSafetyPackage.swift
+      - Tests/EditorTrustPolicyTests.swift
+      - Tests/MediaHTTPResponseTests.swift
+      - Tests/MediaByteStreamTests.swift
+      - Tests/MediaDocumentAccessTests.swift
+      - Tests/WebContentRecoveryTests.swift
+      - Tests/ExportOperationStoreTests.swift
+      - .github/workflows/piks-native-safety.yml
+
+permissions:
+  contents: read
+
+jobs:
+  components:
+    runs-on: macos-26
+    timeout-minutes: 10
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Test Foundation components
+        run: |
+          set -euo pipefail
+          mkdir -p build/safety/Sources/Safety build/safety/Tests/SafetyTests
+          cp Tests/NativeSafetyPackage.swift build/safety/Package.swift
+          for name in EditorTrustPolicy MediaHTTPResponse MediaByteStream MediaDocumentAccess WebContentRecovery ExportOperationStore; do
+            if [ -f "App/$name.swift" ]; then cp "App/$name.swift" build/safety/Sources/Safety/; fi
+            if [ -f "Tests/${name}Tests.swift" ]; then
+              { echo '@testable import Safety'; cat "Tests/${name}Tests.swift"; } > "build/safety/Tests/SafetyTests/${name}Tests.swift"
+            fi
+          done
+          swift test --package-path build/safety 2>&1 | tee build/safety-tests.log
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: native-safety-${{ github.run_id }}
+          path: build/safety-tests.log
+          retention-days: 3
