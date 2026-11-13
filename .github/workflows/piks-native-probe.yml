@@ -2,15 +2,6 @@ name: APIKS codec and skin compatibility probe
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - fix/native-release-20261113
-    paths:
-      - .github/workflows/piks-native-probe.yml
-      - Scripts/fetch-probe-inputs.py
-      - Tests/CodecSkinProbeTests.swift
-      - Tests/ProbeInputs/**
-      - project.yml
 
 permissions:
   contents: read

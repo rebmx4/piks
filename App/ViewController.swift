@@ -77,6 +77,8 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
             source: MediaBridge.capsScript,
             injectionTime: .atDocumentStart,
             forMainFrameOnly: true))
+        ucc.addUserScript(WKUserScript(source: MediaDocumentScript.source,
+            injectionTime: .atDocumentStart, forMainFrameOnly: true))
         ucc.add(self, name: "nativeShare")
         ucc.add(self, name: MediaBridge.handlerName)
         config.userContentController = ucc
@@ -326,6 +328,8 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         mediaBridge.diagnostics?.stop()
+        mediaBridge.mediaAccess.revoke()
+        mediaBridge.mediaServer.cancelAll()
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -379,7 +383,9 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
     func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
                  initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
                  decisionHandler: @escaping (WKPermissionDecision) -> Void) {
-        decisionHandler(.grant)
+        let allowed = EditorTrustPolicy.allowsCapture(frame.request.url, mainFrame: frame.isMainFrame,
+            originScheme: origin.protocol, originHost: origin.host, originPort: origin.port)
+        decisionHandler(allowed ? .prompt : .deny)
     }
 
     // MARK: - WKScriptMessageHandler (native share sheet — web layer bridges here)
@@ -391,7 +397,8 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
             mediaBridge.handle(message)
             return
         }
-        guard message.name == "nativeShare" else { return }
+        guard message.name == "nativeShare",
+              EditorTrustPolicy.allows(message.frameInfo.request.url, mainFrame: message.frameInfo.isMainFrame) else { return }
         var items: [Any] = []
         if let body = message.body as? [String: Any] {
             if let text = body["text"] as? String, !text.isEmpty { items.append(text) }

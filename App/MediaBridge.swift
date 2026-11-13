@@ -28,6 +28,9 @@ final class MediaBridge: NSObject {
 
     private weak var webView: WKWebView?
     private weak var host: UIViewController?
+    let mediaAccess = MediaDocumentAccess()
+    lazy var mediaServer = MediaSchemeHandler(access: mediaAccess, document: { [weak self] in self?.webView?.url },
+        resolve: { [weak self] url, done in self?.resolveSchemeResource(url, done: done) ?? {} })
 
     private var files: [String: URL] = [:]          // id -> файл ролика (оригинал или копия)
     let videoRequests = MediaRequests<URL>()
@@ -127,7 +130,8 @@ final class MediaBridge: NSObject {
     // MARK: - Команды со страницы
 
     func handle(_ message: WKScriptMessage) {
-        guard let body = message.body as? [String: Any] else { return }
+        guard EditorTrustPolicy.allows(message.frameInfo.request.url, mainFrame: message.frameInfo.isMainFrame),
+              let body = message.body as? [String: Any] else { return }
         if let cmd = body["cmd"] as? String, cmd.hasPrefix("diag-") {
             diagnostics?.handle(body, origin: message.frameInfo.request.url,
                                 mainFrame: message.frameInfo.isMainFrame, allowed: canChooseSite)
@@ -135,6 +139,10 @@ final class MediaBridge: NSObject {
         }
         diagnostics?.command(body)
         switch body["cmd"] as? String {
+        case "document-ready":
+            if let token = body["token"] as? String {
+                mediaAccess.bind(token, document: message.frameInfo.request.url, mainFrame: message.frameInfo.isMainFrame)
+            }
         case "ping":          send(["event": "ready"])
         case "pick":          pickVideo()
         case "proxy":         makeProxyOnDemand(body["id"] as? String)

@@ -33,10 +33,7 @@ final class MediaDiagnosticsState {
     }
 
     static func allows(origin: URL?, mainFrame: Bool, allowed: Bool) -> Bool {
-        guard allowed, mainFrame, let url = origin, url.scheme == "https", url.host == "rynpro.ru",
-              url.port == nil || url.port == 443,
-              url.path == "/ryn-next" || url.path.hasPrefix("/ryn-next/") else { return false }
-        return true
+        allowed && EditorTrustPolicy.site(origin, mainFrame: mainFrame) == .test
     }
 
     @discardableResult func configure(_ value: [String: Any], origin: URL?, mainFrame: Bool, allowed: Bool) -> Bool {

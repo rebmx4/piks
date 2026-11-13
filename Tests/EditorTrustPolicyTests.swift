@@ -20,4 +20,18 @@ final class EditorTrustPolicyTests: XCTestCase {
         }
         XCTAssertFalse(EditorTrustPolicy.allows(nil, mainFrame: true))
     }
+
+    func testCaptureRequiresTheSameSecurityOriginAndMainFrame() {
+        let url = URL(string: "https://rynpro.ru/ryn-next/")
+        XCTAssertTrue(EditorTrustPolicy.allowsCapture(url, mainFrame: true,
+            originScheme: "https", originHost: "rynpro.ru", originPort: 443))
+        for (scheme, host, port, main) in [("http", "rynpro.ru", 0, true),
+            ("https", "example.org", 443, true), ("https", "rynpro.ru", 444, true),
+            ("https", "rynpro.ru", 443, false)] {
+            XCTAssertFalse(EditorTrustPolicy.allowsCapture(url, mainFrame: main,
+                originScheme: scheme, originHost: host, originPort: port))
+        }
+        XCTAssertEqual(EditorTrustPolicy.site(url, mainFrame: true), .test)
+        XCTAssertEqual(EditorTrustPolicy.site(URL(string: "https://rynpro.ru/ryn/"), mainFrame: true), .stable)
+    }
 }

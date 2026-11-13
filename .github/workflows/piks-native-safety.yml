@@ -9,6 +9,8 @@ on:
       - App/MediaHTTPResponse.swift
       - App/MediaByteStream.swift
       - App/MediaDocumentAccess.swift
+      - App/MediaSchemeHandler.swift
+      - App/MediaDocumentScript.swift
       - App/WebContentRecovery.swift
       - App/ExportOperationStore.swift
       - Tests/NativeSafetyPackage.swift
@@ -16,6 +18,8 @@ on:
       - Tests/MediaHTTPResponseTests.swift
       - Tests/MediaByteStreamTests.swift
       - Tests/MediaDocumentAccessTests.swift
+      - Tests/MediaSchemeHandlerTests.swift
+      - Tests/MediaDocumentScriptTests.swift
       - Tests/WebContentRecoveryTests.swift
       - Tests/ExportOperationStoreTests.swift
       - .github/workflows/piks-native-safety.yml
@@ -38,7 +42,7 @@ jobs:
           set -euo pipefail
           mkdir -p build/safety/Sources/Safety build/safety/Tests/SafetyTests
           cp Tests/NativeSafetyPackage.swift build/safety/Package.swift
-          for name in EditorTrustPolicy MediaHTTPResponse MediaByteStream MediaDocumentAccess WebContentRecovery ExportOperationStore; do
+          for name in EditorTrustPolicy MediaHTTPResponse MediaByteStream MediaDocumentAccess MediaSchemeHandler MediaDocumentScript WebContentRecovery ExportOperationStore; do
             if [ -f "App/$name.swift" ]; then cp "App/$name.swift" build/safety/Sources/Safety/; fi
             if [ -f "Tests/${name}Tests.swift" ]; then
               { echo '@testable import Safety'; cat "Tests/${name}Tests.swift"; } > "build/safety/Tests/SafetyTests/${name}Tests.swift"
