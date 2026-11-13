@@ -17,6 +17,7 @@ final class ExportOperationStore {
         }
     }
     private final class Entry {
+        var web = false
         var phase: Phase
         var file: URL?
         var reason: String?
@@ -36,6 +37,30 @@ final class ExportOperationStore {
         guard entries[token] == nil, entries.values.filter({ $0.phase == .exporting }).count < 4 else { lock.unlock(); return false }
         let entry = Entry(.exporting); insert(token, entry); let value = snapshot(token, entry)
         lock.unlock(); onChange?(value); return true
+    }
+
+    @discardableResult func beginWebExport(_ token: String) -> Bool {
+        guard Self.valid(token) else { return false }
+        lock.lock()
+        if let old = entries[token], old.phase != .failed || old.file != nil { lock.unlock(); return false }
+        guard entries.values.filter({ $0.phase == .exporting }).count < 4 else { lock.unlock(); return false }
+        let entry = Entry(.exporting); entry.web = true
+        insert(token, entry); let value = snapshot(token, entry)
+        lock.unlock(); onChange?(value); return true
+    }
+
+    func endWebExport(_ token: String, cancelled: Bool) {
+        lock.lock()
+        let unfinished = entries[token].map { $0.web && $0.phase == .exporting } ?? false
+        lock.unlock()
+        if unfinished { failed(token, reason: cancelled ? "экспорт отменён" : "экспорт не завершён", cancelled: cancelled) }
+    }
+
+    func interruptWebExports() {
+        lock.lock()
+        let unfinished = entries.filter { $0.value.web && $0.value.phase == .exporting }.map { $0.key }
+        lock.unlock()
+        for token in unfinished { failed(token, reason: "Редактор был восстановлен. Экспорт нужно запустить заново.") }
     }
 
     func fileReady(_ token: String, file: URL) {

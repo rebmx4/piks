@@ -373,8 +373,8 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        mediaBridge.documentWillChange()
         let operation = mediaBridge.exportOperations.status()
+        mediaBridge.documentWillChange()
         recoveredExport = operation.flatMap { value in
             [.exporting, .saving, .fileReady].contains(value.phase) ? value.token : nil
         }

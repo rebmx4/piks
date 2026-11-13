@@ -153,6 +153,10 @@ final class MediaBridge: NSObject {
         case "export-status":
             send(["event": "export-status", "req": body["req"] as? String ?? "",
                   "operation": exportOperations.status(body["token"] as? String)?.payload ?? [:]])
+        case "export-web-begin":
+            if let token = body["token"] as? String { exportOperations.beginWebExport(token) }
+        case "export-web-end":
+            if let token = body["token"] as? String { exportOperations.endWebExport(token, cancelled: body["cancelled"] as? Bool ?? false) }
         case "export-share":  shareExport()
         case "export-save-file":
             saveExportFile(body, allowed: ExportPhotoRequest.allows(message.frameInfo.request.url,
@@ -338,6 +342,7 @@ final class MediaBridge: NSObject {
 
     func documentWillChange() {
         playback?.stop()
+        exportOperations.interruptWebExports()
         diagnostics?.stop()
         mediaAccess.revoke()
         mediaServer.cancelAll()

@@ -8,12 +8,14 @@ extension MediaBridge {
             send(["event":"export-save-result","req":req,"saved":false,"reason":"неверный запрос сохранения"])
             return
         }
-        exportOperations.save(request, resolve: { [weak self] id in
-            guard let file=self?.proxyFile(id),
+        let ownedFile: (String) -> URL? = { [weak self] id in
+            guard let file = self?.proxyFile(id),
                   file.standardizedFileURL.deletingLastPathComponent()==MediaBridge.userDir.standardizedFileURL,
                   file.lastPathComponent==id+".mp4", FileManager.default.isReadableFile(atPath:file.path) else { return nil }
             return file
-        }, write: NativeExporter.saveToPhotos) { [weak self] ok,error in
+        }
+        if let file = ownedFile(request.id) { exportOperations.fileReady(request.token, file: file) }
+        exportOperations.save(request, resolve: ownedFile, write: NativeExporter.saveToPhotos) { [weak self] ok,error in
             DispatchQueue.main.async {
                 self?.send(["event":"export-save-result","req":req,"saved":ok,"reason":error ?? ""], generation: generation)
                 if ok {

@@ -51,4 +51,23 @@ final class ExportOperationStoreTests: XCTestCase {
         second?(true, nil)
         XCTAssertEqual(completed, 1); XCTAssertEqual(store.status("retry-race")?.phase, .saved)
     }
+
+    func testWebContentLossInterruptsOnlyItsRendererAndNeverThePhotosCommitOrNativeRender() {
+        let store = ExportOperationStore(), file = URL(fileURLWithPath: "/tmp/ready.mp4")
+        XCTAssertTrue(store.beginExport("native"))
+        XCTAssertTrue(store.beginWebExport("web-render"))
+        XCTAssertTrue(store.beginWebExport("web-saving"))
+        store.fileReady("web-saving", file: file)
+        var commit: ExportOperationStore.Completion?
+        store.save("web-saving", file: file, write: { _, done in commit = done }) { ok, _ in XCTAssertTrue(ok) }
+        store.interruptWebExports()
+        XCTAssertEqual(store.status("native")?.phase, .exporting)
+        XCTAssertEqual(store.status("web-render")?.phase, .failed)
+        XCTAssertEqual(store.status("web-saving")?.phase, .saving)
+        commit?(true, nil)
+        XCTAssertEqual(store.status("web-saving")?.phase, .saved)
+        XCTAssertTrue(store.beginWebExport("web-render"), "the interrupted/fallback attempt may start again explicitly")
+        store.endWebExport("web-render", cancelled: true)
+        XCTAssertEqual(store.status("web-render")?.phase, .cancelled)
+    }
 }
