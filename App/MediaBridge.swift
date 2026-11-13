@@ -35,6 +35,10 @@ final class MediaBridge: NSObject {
     private var files: [String: URL] = [:]          // id -> файл ролика (оригинал или копия)
     let videoRequests = MediaRequests<URL>()
     var galleryRequests: [String: [() -> Void]] = [:]
+    var mediaSequence = 0 // MediaVideoFile diagnostics share this request counter.
+    let sourceProbeQueue = DispatchQueue(label: "apiks.source.probe", qos: .utility)
+    var sourceProbeRunning = false
+    var sourceProbeResults: [String: [String: Any]] = [:]
     var diagnosedMedia = Set<String>()
     var audioFiles: [String: URL] = [:]             // id -> звук ролика отдельным m4a (MediaAudio.swift)
     private var export: AVAssetExportSession?
@@ -79,7 +83,7 @@ final class MediaBridge: NSObject {
         var caps = ["pick", "export", "photos", "share", "wave", "audio", "ramps", "read", "adjust", "gallery",
                     "speed", "crop", "mask", "overlap", "cifilter", "stills", "files", "photo", "live", "haptic",
                     "mic", "vision", "preview", "stereo", "inbox", "keep", "cache", "play", "reverse", "reverse-proxy", "mediaRead",
-                    "exportPresentation", "play-context", "exportPhotosV1", "exportPosterV1", "exportRecoveryV1"]
+                    "exportPresentation", "play-context", "exportPhotosV1", "exportPosterV1", "exportRecoveryV1", "sourceDecodeProbeV1"]
         if canChooseSite { caps.insert("site", at: 4) }
         if canChooseSite { caps.append("media-diagnostics") }
         if #available(iOS 17.0, *) { caps.append("subject") }
@@ -141,6 +145,7 @@ final class MediaBridge: NSObject {
                 }
             }
         case "ping":          send(["event": "ready"])
+        case "probe-source":  probeSource(body)
         case "pick":          pickVideo()
         case "proxy":         makeProxyOnDemand(body["id"] as? String)
         case "export":        startExport(body["plan"] as? String, job: body["job"] as? String)

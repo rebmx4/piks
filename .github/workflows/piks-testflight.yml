@@ -87,7 +87,7 @@ jobs:
           for field, expected in required.items():
               if run.get(field) != expected:
                   raise SystemExit(f'Native check {field} does not match the requested source')
-          if run.get('head_branch') not in ('fix/play-context-20261030', 'ci/github-testflight-20261030', 'fix/export-recovery-20261107'):
+          if run.get('head_branch') not in ('fix/play-context-20261030', 'ci/github-testflight-20261030', 'fix/export-recovery-20261107', 'fix/native-release-20261113'):
               raise SystemExit('Expected an approved APIKS native source branch')
           if run.get('repository', {}).get('full_name') != os.environ['GITHUB_REPOSITORY']:
               raise SystemExit('Native check belongs to another repository')

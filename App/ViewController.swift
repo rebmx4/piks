@@ -341,7 +341,11 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKSc
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         refreshControl.endRefreshing()
         offlineView.isHidden = true
+        let wasRecovering = recovery.recovering
         recovery.loaded()
+        if wasRecovering {
+            webView.evaluateJavaScript("window.__apiksRecoveryRequested = true; window.dispatchEvent(new Event('apiks-native-recovered'));", completionHandler: nil)
+        }
         exportRecoveryPresenter?.restore(recoveredExport)
         recoveredExport = nil
     }
