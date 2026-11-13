@@ -57,7 +57,9 @@ final class CodecSkinProbeTests: XCTestCase {
         let result = try segmenter.segment(image: image)
         let mask = try XCTUnwrap(result.categoryMask)
         let categories = Array(UnsafeBufferPointer(start: mask.uint8Data, count: mask.width * mask.height))
-        XCTAssertEqual(mask.width, 256); XCTAssertEqual(mask.height, 256)
+        // The native task projects categories back onto the input image.
+        // Model tensor dimensions are not the returned mask coordinate grid.
+        XCTAssertEqual(mask.width, Int(size.width)); XCTAssertEqual(mask.height, Int(size.height))
         XCTAssertTrue(categories.allSatisfy { $0 <= 5 })
         XCTAssertGreaterThan(categories.filter { $0 == 2 || $0 == 3 }.count, 100,
             "Public portrait must produce actual skin, not a missing/all-zero result")
