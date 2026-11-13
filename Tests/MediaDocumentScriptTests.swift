@@ -45,8 +45,10 @@ final class MediaDocumentScriptTests: XCTestCase {
         image.onerror = () => window.webkit.messageHandlers.ryndi.postMessage({cmd:'failed'});
         image.src = 'ryndi-media://orig/image.png'; document.documentElement.appendChild(image);
         const frame = document.createElement('iframe');
-        frame.onload = () => window.webkit.messageHandlers.ryndi.postMessage({cmd:'frame', src:frame.src});
         frame.src = 'ryndi-media://orig/blocked.png'; document.documentElement.appendChild(frame);
+        // A blocked frame need not emit load. Observe the actual URL after the
+        // DOM mutation checkpoint instead; an accidentally scoped URL fails.
+        queueMicrotask(() => window.webkit.messageHandlers.ryndi.postMessage({cmd:'frame', src:frame.src}));
         </script>
         """, baseURL: document)
         wait(for: [ready, loaded, frame], timeout: 20)
